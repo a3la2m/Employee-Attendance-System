@@ -106,6 +106,13 @@ npm run tauri dev
 cd src-tauri && cargo test
 ```
 
+اختبار حيّ ضد الجهاز الحقيقي (اختياري، لا يعمل في CI):
+
+```bash
+cd src-tauri
+ZK_IP=192.168.1.205 cargo test live_device -- --ignored --nocapture
+```
+
 ### البناء الإنتاجي (ويندوز)
 
 ```bash
@@ -114,6 +121,14 @@ npm run tauri build      # → .msi و .exe
 
 أو عبر **GitHub Actions** (`.github/workflows/build-windows.yml`) — يبني تلقائياً على
 `windows-latest` ويرفع المثبّتات كـ Artifacts.
+
+### التشغيل على لينكس (مثل Linux Mint — بدون صلاحيات مدير)
+
+```bash
+npm run build                        # بناء واجهة React
+cd src-tauri && cargo build --release && cd ..
+./run-linux.sh                       # تشغيل التطبيق مباشرة
+```
 
 ---
 
