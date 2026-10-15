@@ -8,7 +8,9 @@ use std::time::Duration;
 use std::str;
 
 const TOP1: u16 = 0x5050;
-const TOP2: u16 = 0x7282;
+// 0x7D82 (32130) — سحر الإطار المُثبت تجريبياً على K50 Pro. القيمة 0x7282
+// في بعض نسخ pyzk تؤدي إلى رفض فوري (RST) من الجهاز = "recv failed".
+const TOP2: u16 = 0x7D82;
 const U: u32 = 65535;
 
 // أوامر
@@ -124,23 +126,21 @@ impl ZkProtocol {
         }
     }
 
+    /// يبني إطاراً كاملاً (بدون رأس TCP). checksum يُحسب على **نفس البكادات
+    /// التي ستُرسل** (حقل checksum = 0) — هذا ما يتحقّق منه الجهاز حيّاً
+    /// (صيغة complement الـ16bit: `!S & 0xFFFF`).
     fn build_frame(&mut self, cmd: u16, payload: &[u8]) -> Vec<u8> {
+        // reply_id يزيد أولاً بطريقة pyzk: % 65535 (وليس wrapping % 65536)
+        self.reply_id = ((self.reply_id as u32 + 1) % U) as u16;
         let mut buf = Vec::with_capacity(8 + payload.len());
         buf.extend_from_slice(&cmd.to_le_bytes());
-        buf.extend_from_slice(&0u16.to_le_bytes()); // checksum placeholder
+        buf.extend_from_slice(&0u16.to_le_bytes()); // placeholder — يُصفّى عند التحقق
         buf.extend_from_slice(&self.session_id.to_le_bytes());
         buf.extend_from_slice(&self.reply_id.to_le_bytes());
         buf.extend_from_slice(payload);
         let cs = checksum(&buf);
-        self.reply_id = self.reply_id.wrapping_add(1);
-        // أعد البناء مع checksum صحيح و reply_id محدّث
-        let mut out = Vec::with_capacity(8 + payload.len());
-        out.extend_from_slice(&cmd.to_le_bytes());
-        out.extend_from_slice(&cs.to_le_bytes());
-        out.extend_from_slice(&self.session_id.to_le_bytes());
-        out.extend_from_slice(&self.reply_id.to_le_bytes());
-        out.extend_from_slice(payload);
-        out
+        buf[2..4].copy_from_slice(&cs.to_le_bytes());
+        buf
     }
 
     fn send_frame(&mut self, cmd: u16, payload: &[u8]) -> Result<()> {
@@ -201,32 +201,39 @@ impl ZkProtocol {
         let total = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]) as usize;
         const CHUNK: usize = 0x4000;
         let mut collected = Vec::with_capacity(total);
-        let mut start: i32 = 0;
+        let mut start: usize = 0;
+        // نقرأ دفعةً دفعة حتى نجمع total. الـ ACK_OK الختامي لكل دفعة يُستهلك
+        // ضمن الدفعة نفسها ثم يُطلب CHUNK التالي — مطابق لـ pyzk read_with_buffer.
         while collected.len() < total {
-            let want = std::cmp::min(CHUNK, total - collected.len()) as i32;
+            let want = std::cmp::min(CHUNK, total - start);
             let mut rc = Vec::new();
-            rc.extend_from_slice(&start.to_le_bytes());
-            rc.extend_from_slice(&want.to_le_bytes());
+            rc.extend_from_slice(&(start as i32).to_le_bytes());
+            rc.extend_from_slice(&(want as i32).to_le_bytes());
             let (cmd, payload) = self.command(_CMD_READ_BUFFER, &rc)?;
             if cmd == CMD_PREPARE_DATA {
                 let ann =
                     u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 let mut got = Vec::with_capacity(ann);
-                while got.len() < ann {
+                loop {
                     let (c2, p2) = self.read_frame()?;
                     if c2 == CMD_DATA {
                         got.extend_from_slice(&p2);
                     } else if c2 == CMD_ACK_OK {
-                        break;
+                        break; // نهاية هذه الدفعة
+                    } else {
+                        return Err(anyhow!("chunk data unexpected cmd={c2}"));
                     }
                 }
-                start += got.len() as i32;
+                if got.is_empty() {
+                    break; // لا مزيد من البيانات عند الجهاز
+                }
+                start += got.len();
                 collected.extend_from_slice(&got);
             } else if cmd == CMD_DATA {
-                start += payload.len() as i32;
+                start += payload.len();
                 collected.extend_from_slice(&payload);
             } else if cmd == CMD_ACK_OK {
-                break;
+                break; // الجهاز أنهى البث قبل total
             } else {
                 return Err(anyhow!("READ_BUFFER unexpected cmd={cmd}"));
             }
@@ -312,24 +319,31 @@ impl DeviceBackend for ZkProtocol {
         let body = &data[4..];
         let mut out = Vec::new();
         if psize == 72 {
+            // تخطيط zk8 الرسمي (pyzk: unpack '<HB8s24sIx7sx24s'):
+            // uid(u16)@0، privilege@2، password@3..11، name@11..35،
+            // card(u32)@35..39، group@40..47، pin/user_id@48..72
             for c in body.chunks_exact(72) {
                 let uid = u16::from_le_bytes([c[0], c[1]]) as i64;
                 let privilege = c[2] as i64;
-                let name = bytes_to_str(&c[13..37]);
-                let card = u32::from_le_bytes([c[37], c[38], c[39], c[40]]);
-                let user_id = bytes_to_str(&c[53..77]);
+                let name = bytes_to_str(&c[11..35]);
+                let card = u32::from_le_bytes([c[35], c[36], c[37], c[38]]);
+                let user_id = bytes_to_str(&c[48..72]);
                 let pin = if user_id.is_empty() { uid.to_string() } else { user_id };
                 out.push((pin, name, card, privilege));
             }
         } else if psize == 28 {
+            // zk6: '<HB5s8sIxBhI' — pin = user_id رقمي@24
             for c in body.chunks_exact(28) {
                 let uid = u16::from_le_bytes([c[0], c[1]]) as i64;
                 let privilege = c[2] as i64;
                 let name = bytes_to_str(&c[8..16]);
-                let user_id = &c[24..28];
-                let uid_num = u32::from_le_bytes([user_id[0], user_id[1], user_id[2], user_id[3]]);
-                out.push((uid.to_string(), name, 0, privilege));
-                let _ = uid_num;
+                let uid_num = u32::from_le_bytes([c[24], c[25], c[26], c[27]]);
+                let pin = if uid_num != 0 {
+                    uid_num.to_string()
+                } else {
+                    uid.to_string()
+                };
+                out.push((pin, name, 0, privilege));
             }
         }
         Ok(out)
@@ -451,5 +465,69 @@ impl DeviceBackend for ZkProtocol {
         if let Some(s) = self.sock.take() {
             let _ = s.shutdown(std::net::Shutdown::Both);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// checksum الإطار يجب أن يتطابق مع إعادة الحساب بعد تصفير الحقل —
+    /// بالضبط التحقق الذي يجريه الجهاز (مُثبت تجريبياً 3/3 على K50 Pro).
+    #[test]
+    fn frame_checksum_matches_device_verification() {
+        let mut p = ZkProtocol::new("0.0.0.0", 4370, 0);
+        for (i, cmd) in [1000u16, 11, 50, 1503, 1504].into_iter().enumerate() {
+            let frame = p.build_frame(cmd, &[1, 2, 3, 4]);
+            assert_eq!(u16::from_le_bytes([frame[0], frame[1]]), cmd);
+            // reply_id متسلسل: الأول = 0 ثم يزيد (طريقة pyzk % 65535)
+            assert_eq!(u16::from_le_bytes([frame[6], frame[7]]), i as u16);
+            let mut zeroed = frame.clone();
+            zeroed[2] = 0;
+            zeroed[3] = 0;
+            let cs = checksum(&zeroed);
+            assert_eq!(
+                u16::from_le_bytes([frame[2], frame[3]]),
+                cs,
+                "checksum must equal the mod-65536 complement of the exact sent bytes"
+            );
+        }
+        assert_eq!(p.reply_id, 4); // (65534 + 5) % 65535
+    }
+
+    /// سحر الإطار المُثبت على K50 Pro؛ القيمة القديمة 0x7282 تُسبب RST فوري.
+    #[test]
+    fn frame_magic_is_7d82() {
+        assert_eq!(TOP1, 0x5050);
+        assert_eq!(TOP2, 0x7D82);
+    }
+
+    /// اختبار حيّ ضد الجهاز الحقيقي — يُشغَّل يدوياً فقط (يتجاهله CI):
+    /// ZK_IP=192.168.1.205 cargo test live_device -- --ignored --nocapture
+    #[test]
+    #[ignore = "يحتاج جهاز بصمة على الشبكة"]
+    fn live_device_smoke() {
+        let ip = std::env::var("ZK_IP").unwrap_or_else(|_| "192.168.1.205".to_string());
+        let mut d = ZkProtocol::new(&ip, 4370, 0);
+        let info = d.connect().expect("connect failed");
+        println!(
+            "connected: {} {} serial={} users={} records={}",
+            info.device_name, info.firmware, info.serial, info.users, info.records
+        );
+        assert!(info.connected);
+        let users = d.pull_users().expect("pull_users failed");
+        println!("users pulled: {}  first={:?}", users.len(), users.first());
+        assert_eq!(users.len() as i64, info.users, "user count mismatch");
+        let att = d.pull_attendance().expect("pull_attendance failed");
+        println!(
+            "attendance pulled: {}\n  first={:?}\n  last={:?}",
+            att.len(),
+            att.first(),
+            att.last()
+        );
+        assert_eq!(att.len() as i64, info.records, "record count mismatch");
+        let now_iso = d.get_time_iso().expect("get_time failed");
+        println!("device clock: {now_iso}");
+        d.close();
     }
 }

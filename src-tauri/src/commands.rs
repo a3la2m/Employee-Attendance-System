@@ -364,10 +364,12 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
         for (pin, name, _card, _priv) in users {
             if !pin_to_id.contains_key(&pin) {
                 // موظف على الجهاز غير مسجّل محلياً → أضفه تمهيدياً
+                // (بلا اسم على الجهاز؟ نستخدم الرقم الوظيفي كاسم ظاهر)
+                let display = if name.trim().is_empty() { pin.clone() } else { name };
                 conn.execute(
                     "INSERT OR IGNORE INTO employees(pin,name,active,created_at,updated_at)
                      VALUES(?1,?2,1,?3,?3)",
-                    rusqlite::params![pin, name, now],
+                    rusqlite::params![pin, display, now],
                 )
                 .map_err(|e| e.to_string())?;
                 added_users += 1;

@@ -21,7 +21,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::tray::TrayIconBuilder;
 
     let show = MenuItem::with_id(app, "show", "إظهار النافذة", true, None::<&str>)?;
-    let hide = MenuItem::with_id(app, "hide", "إخفاء للصينية", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "إخفاء إلى شريط الإشعارات", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "خروج", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
 

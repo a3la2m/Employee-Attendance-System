@@ -100,7 +100,7 @@ export default function App() {
           })}
         </nav>
         <div className="p-4 text-[11px] text-slate-500 border-t border-slate-800">
-          يعمل في الخلفية + صينية نظام
+          يظل يعمل في الخلفية كأيقونة في شريط إشعارات النظام
         </div>
       </aside>
 
