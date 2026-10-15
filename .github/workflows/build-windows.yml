@@ -44,17 +44,27 @@ jobs:
         run: |
           set +e
           set +o pipefail
-          echo "=== آخر 250 سطر من سجل البناء ==="
-          tail -n 250 build.log
+          # cargo يكتب التقدّم بـ\r (سطر واحد فيزيائي) — نحوّله لسطور وننظّف ألوان ANSI
+          tr '\r' '\n' < build.log | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' > build_clean.log
+          echo "=== آخر 200 سطر (منظّفة) ==="
+          tail -n 200 build_clean.log
+          echo "=== تشخيص الموارد ==="
+          wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
+          wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
           {
-            echo "## ❌ سجل فشل بناء ويندوز (آخر 300 سطر)"
+            echo "## ❌ سجل فشل بناء ويندوز (آخر 250 سطر، منظّف)"
             echo '```'
-            tail -n 300 build.log
+            tail -n 250 build_clean.log
+            echo '```'
+            echo "### تشخيص الموارد"
+            echo '```'
+            wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
+            wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # أرسل آخر 45 سطراً كإشعارات أقرأها عبر API
-          tail -n 45 build.log | while IFS= read -r line; do
-            echo "::error::${line}"
+          # أرسل آخر 40 سطراً منظّفة كإشعارات أقرأها عبر API
+          tail -n 40 build_clean.log | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::${line}"
           done
           exit 0
 
