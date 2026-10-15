@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# قواعد بيانات محلية (لا تُرفع)
+*.db
+*.db-shm
+*.db-wal
+
+# ملفات الـ SDK (يوضع يدوياً على ويندوز)
+src-tauri/zk/*.dll
