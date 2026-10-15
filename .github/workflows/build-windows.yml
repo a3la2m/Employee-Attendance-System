@@ -34,6 +34,9 @@ jobs:
 
       - name: Build Tauri app (.msi / .exe)
         shell: bash
+        env:
+          # حصرية التوازي لتقليل ذروة الذاكرة على عدّاء GitHub (يُنتج windows-sys الضخم)
+          CARGO_BUILD_JOBS: 2
         run: |
           set -o pipefail
           npx tauri build 2>&1 | tee build.log
@@ -44,29 +47,35 @@ jobs:
         run: |
           set +e
           set +o pipefail
-          # cargo يكتب التقدّم بـ\r (سطر واحد فيزيائي) — نحوّله لسطور وننظّف ألوان ANSI
+          # cargo يكتب التقدّم ب\r — نحوّله لسطور وننظّف ANSI
           tr '\r' '\n' < build.log | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' > build_clean.log
-          echo "=== آخر 200 سطر (منظّفة) ==="
-          tail -n 200 build_clean.log
+          # أزِل ضجيج Compiling/Checking لكشف أي خطأ حقيقي مخفي
+          grep -v -E "^\s*(Compiling|Checking|Downloaded|Downloading|Updating|Locking|Adding)" build_clean.log > build_signal.log
+          echo "=== عدد سطور السجل الكلي ==="
+          wc -l build_clean.log build_signal.log
+          echo "=== آخر 60 سطراً (بلا ضجيج Compiling) ==="
+          tail -n 60 build_signal.log
           echo "=== تشخيص الموارد ==="
           wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
           wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
           {
-            echo "## ❌ سجل فشل بناء ويندوز (آخر 250 سطر، منظّف)"
+            echo "## ❌ سجل فشل بناء ويندوز"
+            echo "عدد سطور السجل: $(wc -l < build_clean.log) — بلا ضجيج: $(wc -l < build_signal.log)"
             echo '```'
-            tail -n 250 build_clean.log
+            tail -n 120 build_signal.log
             echo '```'
-            echo "### تشخيص الموارد"
+            echo "### الموارد (ذاكرة/قرص)"
             echo '```'
             wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
             wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # أرسل آخر 40 سطراً منظّفة كإشعارات أقرأها عبر API
-          tail -n 40 build_clean.log | while IFS= read -r line; do
+          tail -n 35 build_signal.log | while IFS= read -r line; do
             [ -n "$line" ] && echo "::error::${line}"
           done
           exit 0
+
+      - name: Upload installers
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
