@@ -111,6 +111,7 @@ fn sync_once(app: &tauri::AppHandle) {
 #[cfg(windows)]
 fn watch_new_windows_users(app: tauri::AppHandle) {
     use std::collections::HashSet;
+    use tauri_plugin_notification::NotificationExt;
     tauri::async_runtime::spawn_blocking(move || {
         use winreg::enums::HKEY_LOCAL_MACHINE;
         use winreg::RegKey;
@@ -118,7 +119,8 @@ fn watch_new_windows_users(app: tauri::AppHandle) {
         let mut known: HashSet<String> = HashSet::new();
         // التهيئة: سجّل الموجودين دون إشعار
         if let Ok(hkcu) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(path) {
-            for name in hkcu.enum_keys().flatten() {
+            // enum_keys() تُرجع io::Result<متصفّح من io::Result<String>>
+            for name in hkcu.enum_keys().into_iter().flatten().flatten() {
                 if name.starts_with("S-1-5-21-") {
                     known.insert(name);
                 }
@@ -127,7 +129,7 @@ fn watch_new_windows_users(app: tauri::AppHandle) {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
             if let Ok(hkcu) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(path) {
-                for name in hkcu.enum_keys().flatten() {
+                for name in hkcu.enum_keys().into_iter().flatten().flatten() {
                     if name.starts_with("S-1-5-21-") && !known.contains(&name) {
                         known.insert(name.clone());
                         // اسم المستخدم من ProfileImagePath إن توفّر

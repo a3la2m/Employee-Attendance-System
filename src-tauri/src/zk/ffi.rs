@@ -10,7 +10,7 @@
 
 use super::{DeviceBackend, DeviceInfo, RawPunch, RawUser};
 use anyhow::{anyhow, Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 type FnConnect = unsafe extern "C" fn(*const i8) -> isize;
 type FnDisconnect = unsafe extern "C" fn(isize);
@@ -23,76 +23,80 @@ pub struct ZkDllBackend {
     lib: &'static libloading::Library, // مكتبة محمّلة تبقى حيّة
     conn: isize,
     ip: String,
+    #[allow(dead_code)]
     comm_key: u32,
 }
-
-// دوال نصية إضافية نحملها ديناميكياً عند الحاجة.
-static mut DLL_PATH: Option<PathBuf> = None;
 
 impl ZkDllBackend {
     /// يحاول تحميل plcommpro.dll من عدة مسارات شائعة. يرجع None إن لم يُوجد.
     pub fn try_load(ip: &str, port: u16, comm_key: u32) -> Option<Self> {
-        let _ = port;
         let candidates = candidate_paths();
         for p in &candidates {
-            if p.exists() {
-                if let Ok(lib) = unsafe { libloading::Library::new(p) } {
-                    unsafe { DLL_PATH = Some(p.clone()) };
-                    let conn = {
-                        let connect: libloading::Symbol<FnConnect> = lib
-                            .get(b"Connect")
-                            .ok()?;
-                        // نص الاتصال لـ plcommpro: "ip:port" أو just IP.
-                        let target = std::ffi::CString::new(format!("{}:{}", ip, port)).ok()?;
-                        connect(target.as_ptr())
-                    };
-                    if conn == 0 {
-                        log::warn!("plcommpro Connect() failed for {}", ip);
-                        return None;
-                    }
-                    // ضبط مفتاح الاتصال إن كان محدداً (CommKey)
-                    if comm_key != 0 {
-                        // زر بسيط: نحاول ضبط المفتاح عبر SetDevicePassword إن توفّر.
-                        let lib2 = unsafe { &*(std::ptr::from_ref(lib)) };
-                        let _ = lib2;
-                    }
-                    // نحيل المكتبة إلى 'static عبر leak (تبقى لعمر التطبيق).
-                    let static_lib: &'static libloading::Library = unsafe {
-                        &*(std::ptr::from_ref(&lib) as *const libloading::Library)
-                    };
-                    // نمنع تحرير المكتبة يدوياً.
-                    std::mem::forget(lib);
-                    return Some(Self { lib: static_lib, conn, ip: ip.to_string(), comm_key });
-                }
+            if !p.exists() {
+                continue;
             }
+            // حمّل المكتبة (آمن) ثم تابع فقط إذا نجح التحميل
+            let lib = match unsafe { libloading::Library::new(p) } {
+                Ok(l) => l,
+                Err(e) => {
+                    log::warn!("failed to load {:?}: {e}", p);
+                    continue;
+                }
+            };
+            // نص الاتصال لـ plcommpro: "ip:port"
+            let target = std::ffi::CString::new(format!("{}:{}", ip, port)).ok()?;
+            // استدعاء Connect (دالة C غير آمنة — نغلّفها في unsafe)
+            let conn = unsafe {
+                match lib.get::<FnConnect>(b"Connect") {
+                    Ok(connect) => (*connect)(target.as_ptr()),
+                    Err(e) => {
+                        log::warn!("plcommpro!Connect not found: {e}");
+                        continue;
+                    }
+                }
+            };
+            if conn == 0 {
+                log::warn!("plcommpro Connect() failed for {ip}");
+                continue;
+            }
+            // انقل المكتبة إلى 'static عبر leak (تبقى حيّة لعمر التطبيق)
+            let static_lib: &'static libloading::Library = Box::leak(Box::new(lib));
+            return Some(Self {
+                lib: static_lib,
+                conn,
+                ip: ip.to_string(),
+                comm_key,
+            });
         }
         None
     }
 
     /// يجلب سجلات الحضور كنص COMMA منفصل ثم يحوّلها.
     fn read_log_text(&self) -> Result<String> {
-        let read: libloading::Symbol<FnReadLog> = unsafe {
+        // buff 10MB (مُعلَّم mutable لأن الجهاز يكتب داخله)
+        let cap = 10 * 1024 * 1024usize;
+        let mut buf = vec![0u8; cap];
+        let buf_ptr = buf.as_mut_ptr();
+        // استدعاء ReadLog (دالة C غير آمنة — نستدعيها داخل unsafe)
+        let read = unsafe {
             self.lib
-                .get(b"ReadLog")
+                .get::<FnReadLog>(b"ReadLog")
                 .context("plcommpro!ReadLog not found")?
         };
-        // buff 10MB
-        let cap = 10 * 1024 * 1024usize;
-        let buf = vec![0u8; cap];
-        let buf_ptr = buf.as_ptr() as *mut i8;
         let fmt = std::ffi::CString::new("Comma").unwrap();
-        let n = unsafe { read(self.conn, fmt.as_ptr()) } as usize;
+        let n = unsafe { (*read)(self.conn, fmt.as_ptr()) }.max(0) as usize;
         if n == 0 || n >= cap {
             // جرّب صيغة افتراضية إن كانت النصية فارغة
             let fmt2 = std::ffi::CString::new("").unwrap();
-            let n2 = unsafe { read(self.conn, fmt2.as_ptr()) } as usize;
+            let n2 = unsafe { (*read)(self.conn, fmt2.as_ptr()) }.max(0) as usize;
             if n2 == 0 {
                 return Err(anyhow!("ReadLog returned {} rows", n));
             }
-            let s = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(buf_ptr as *const u8, n2)) }.to_string();
+            let s = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(buf_ptr, n2)) }
+                .to_string();
             return Ok(s);
         }
-        let s = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(buf_ptr as *const u8, n)) }.to_string();
+        let s = unsafe { String::from_utf8_lossy(std::slice::from_raw_parts(buf_ptr, n)) }.to_string();
         Ok(s)
     }
 }
@@ -188,7 +192,7 @@ impl DeviceBackend for ZkDllBackend {
     fn close(&mut self) {
         if self.conn != 0 {
             if let Ok(dis) = unsafe { self.lib.get::<FnDisconnect>(b"Disconnect") } {
-                unsafe { dis(self.conn) };
+                unsafe { (*dis)(self.conn) };
             }
             self.conn = 0;
         }
