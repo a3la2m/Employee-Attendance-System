@@ -35,6 +35,29 @@ jobs:
       - name: Build Tauri app (.msi / .exe)
         run: npx tauri build
 
+      - name: Surface build errors
+        if: failure()
+        shell: bash
+        run: |
+          echo "--- آخر 200 سطر من سجل البناء ---"
+          LOG="src-tauri/target/release/build.log"
+          if [ -f build.log ]; then LOG=build.log; fi
+          # إعادة تشغيل البناء لالتقاط السجل إن لم يكن محفوظاً
+          if [ ! -f build.log ]; then
+            npx tauri build > build.log 2>&1 || true
+          fi
+          tail -n 200 build.log
+          {
+            echo "## ❌ تفاصيل فشل بناء ويندوز"
+            echo '```'
+            grep -E "^error(\[|:)|error: could not compile|panicked" -A 8 build.log | tail -n 120
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # إشعارات مباشرة تظهر عبر API للوحدات (annotations)
+          grep -E "^error(\[|:)" -A 6 build.log | head -n 100 | while IFS= read -r line; do
+            echo "::error::$line"
+          done
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
