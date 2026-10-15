@@ -49,30 +49,34 @@ jobs:
           set +o pipefail
           # cargo يكتب التقدّم ب\r — نحوّله لسطور وننظّف ANSI
           tr '\r' '\n' < build.log | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' > build_clean.log
-          # أزِل ضجيج Compiling/Checking لكشف أي خطأ حقيقي مخفي
           grep -v -E "^\s*(Compiling|Checking|Downloaded|Downloading|Updating|Locking|Adding)" build_clean.log > build_signal.log
-          echo "=== عدد سطور السجل الكلي ==="
-          wc -l build_clean.log build_signal.log
-          echo "=== آخر 60 سطراً (بلا ضجيج Compiling) ==="
-          tail -n 60 build_signal.log
-          echo "=== تشخيص الموارد ==="
-          wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
-          wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
+          echo "lines raw=$(wc -l < build_clean.log) signal=$(wc -l < build_signal.log)"
           {
             echo "## ❌ سجل فشل بناء ويندوز"
-            echo "عدد سطور السجل: $(wc -l < build_clean.log) — بلا ضجيج: $(wc -l < build_signal.log)"
+            echo '### آخر 60 سطر خام (مكان الوفاة)'
             echo '```'
-            tail -n 120 build_signal.log
+            tail -n 60 build_clean.log
             echo '```'
-            echo "### الموارد (ذاكرة/قرص)"
+            echo '### محتوى بلا ضجيج Compiling'
+            echo '```'
+            tail -n 150 build_signal.log
+            echo '```'
+            echo '### الموارد'
             echo '```'
             wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /Value 2>/dev/null | tr -d '\r'
             wmic logicaldisk get Size,FreeSpace,DeviceID /Value 2>/dev/null | tr -d '\r'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          tail -n 35 build_signal.log | while IFS= read -r line; do
-            [ -n "$line" ] && echo "::error::${line}"
-          done
+          # GitHub يقتطع عند 10 annotations لكل خطوة — نضع السجل كاملاً في
+          # annotation واحد متعدد الأسطر عبر ترميز %0A فلا يُقتطع.
+          emit() { # $1=عنوان $2=ملف
+            { echo "::error title=$1::"; tail -n 150 "$2" | sed -e 's/%/%25/g' -e 's/\r$//' | awk '{printf "%s%%0A", $0}'; echo ""; }
+          }
+          emit "RAW-TAIL-60 (أين مات البناء)" build_clean.log
+          emit "NOISE-FILTERED-150" build_signal.log
+          grep -n -E "error(\[:]|:)|Error:|FAILED|panicked|No space|memory|Killed|signal" build_clean.log > build_errors.log
+          emit "ERROR-MATCHES" build_errors.log
+          wc -l build_errors.log
           exit 0
 
       - name: Upload installers
