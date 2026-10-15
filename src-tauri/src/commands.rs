@@ -3,16 +3,20 @@ use crate::attendance::{check_device_clock, compute_days_for_employee, pair_punc
 use crate::db;
 use crate::models::*;
 use crate::payroll::{compute_payroll, expected_workdays_in_month};
+use crate::storage;
 use crate::zk::make_backend;
 use chrono::NaiveDate;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// حالة التطبيق المشتركة: قاعدة البيانات + إعدادات الجهاز.
+/// حالة التطبيق المشتركة: قاعدة البيانات + مجلد الإعدادات الأساسي.
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// مجلد إعدادات التطبيق الثابت (يحوي storage-config.json).
+    pub base: PathBuf,
 }
 
 fn settings_map(conn: &Connection) -> HashMap<String, String> {
@@ -77,6 +81,118 @@ pub fn save_settings_bulk(
     Ok(())
 }
 
+// ------------------------------------------------------- التخزين والنسخ الاحتياطي
+
+/// يعيد معلومات مكان التخزين الحالي (مجلد + مسارات الملفات الإنجليزية).
+#[tauri::command]
+pub fn get_storage_info(state: tauri::State<'_, AppState>) -> Result<storage::StorageInfo, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let db_path = PathBuf::from(conn.path().ok_or("قاعدة البيانات بلا مسار")?);
+    drop(conn);
+    Ok(storage::StorageInfo::new(&state.base, db_path))
+}
+
+/// يغيّر مجلد التخزين (مثال: مجلد Google Drive) ويعيد فتح القاعدة فيه.
+/// يكتب المؤشّر في storage-config.json وينتقل فعلياً بلا إعادة تشغيل.
+#[tauri::command]
+pub fn set_storage_dir(
+    state: tauri::State<'_, AppState>,
+    dir: String,
+) -> Result<storage::StorageInfo, String> {
+    let dir_trim = dir.trim().to_string();
+    if dir_trim.is_empty() {
+        return Err("مسار المجلد فارغ".into());
+    }
+    let path = PathBuf::from(&dir_trim);
+    if !path.exists() {
+        std::fs::create_dir_all(&path).map_err(|e| format!("تعذّر إنشاء المجلد: {}", e))?;
+    }
+    if !path.is_dir() {
+        return Err("المسار المختار ليس مجلداً".into());
+    }
+    // احفظ المؤشّر أولاً
+    storage::save(
+        &state.base,
+        &storage::StorageConfig {
+            storage_dir: Some(dir_trim),
+        },
+    )?;
+    // أعد فتح القاعدة في المجلد الجديد (تحت القفل، آمن)
+    let new_db = path.join(storage::MAIN_DB);
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let already_open = conn
+        .path()
+        .map(|p| PathBuf::from(p) == new_db)
+        .unwrap_or(false);
+    drop(conn);
+    if !already_open {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        *conn = db::open(&new_db).map_err(|e| e.to_string())?;
+    }
+    get_storage_info(state)
+}
+
+/// نسخة احتياطية متكاملة في مجلد التخزين النشط:
+/// - `attendance.db` → لقطة `attendance-backup-YYYYMMDD-HHMMSS.db` (VACUUM INTO = ثابتة وآمنة)
+/// - `attendance-settings.json` → كل الإعدادات بصيغة JSON منظّمة
+#[tauri::command]
+pub fn backup_now(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let base = &state.base;
+    let active = storage::resolve_dir(base);
+    std::fs::create_dir_all(&active).map_err(|e| e.to_string())?;
+
+    // 1) لقطة قاعدة البيانات (VACUUM INTO ينتج نسخة متّسقة حتى مع نشاط مستمر)
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let db_dest = active.join(format!("attendance-backup-{}.db", stamp));
+    conn.execute("VACUUM INTO ?1", [db_dest.display().to_string()])
+        .map_err(|e| format!("فشل نسخ القاعدة: {}", e))?;
+
+    // 2) تصدير الإعدادات إلى JSON منظّم
+    let settings = db::all_settings(&conn).unwrap_or_default();
+    let doc = json!({
+        "app": "Employee-Attendance-System",
+        "exported_at": chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        "storage_dir": active.display().to_string(),
+        "settings": settings,
+    });
+    let json_dest = active.join(storage::SETTINGS_JSON);
+    let pretty = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&json_dest, pretty).map_err(|e| e.to_string())?;
+
+    Ok(json!({
+        "ok": true,
+        "db_backup": db_dest.display().to_string(),
+        "settings_json": json_dest.display().to_string(),
+        "storage_dir": active.display().to_string(),
+    }))
+}
+
+/// يستعيد الإعدادات من `attendance-settings.json` (يُدمج فوق الإعدادات الحالية).
+#[tauri::command]
+pub fn restore_settings(state: tauri::State<'_, AppState>, path: Option<String>) -> Result<usize, String> {
+    let p = match path {
+        Some(p) => PathBuf::from(p),
+        None => storage::resolve_dir(&state.base).join(storage::SETTINGS_JSON),
+    };
+    let raw = std::fs::read_to_string(&p).map_err(|e| format!("تعذّرت قراءة الملف: {}", e))?;
+    let doc: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("ملف غير صالح: {}", e))?;
+    let settings = doc
+        .get("settings")
+        .and_then(|v| v.as_object())
+        .ok_or("الملف لا يحوي قسم settings")?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut n = 0;
+    for (k, v) in settings {
+        if let Some(val) = v.as_str() {
+            db::set_setting(&conn, k, val).map_err(|e| e.to_string())?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 trait Pipe: Sized {
     fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
         f(self)
@@ -92,7 +208,9 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
     let mut stmt = conn
         .prepare(
             "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
-                    meal_allow,transport_allow,active FROM employees ORDER BY name",
+                    meal_allow,transport_allow,active,
+                    overtime_enabled,meal_enabled,transport_enabled
+             FROM employees ORDER BY name",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -109,6 +227,9 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
                 meal_allow: r.get(8)?,
                 transport_allow: r.get(9)?,
                 active: r.get::<_, i64>(10)? != 0,
+                overtime_enabled: r.get::<_, i64>(11)? != 0,
+                meal_enabled: r.get::<_, i64>(12)? != 0,
+                transport_enabled: r.get::<_, i64>(13)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -122,8 +243,9 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
     if emp.id > 0 {
         conn.execute(
             "UPDATE employees SET pin=?1,name=?2,job_title=?3,phone=?4,daily_hours=?5,
-             break_min=?6,hourly_rate=?7,meal_allow=?8,transport_allow=?9,active=?10,updated_at=?11
-             WHERE id=?12",
+             break_min=?6,hourly_rate=?7,meal_allow=?8,transport_allow=?9,active=?10,updated_at=?11,
+             overtime_enabled=?12,meal_enabled=?13,transport_enabled=?14
+             WHERE id=?15",
             rusqlite::params![
                 emp.pin,
                 emp.name,
@@ -136,6 +258,9 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
                 emp.transport_allow,
                 emp.active as i64,
                 now,
+                emp.overtime_enabled as i64,
+                emp.meal_enabled as i64,
+                emp.transport_enabled as i64,
                 emp.id
             ],
         )
@@ -144,8 +269,9 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
     } else {
         conn.execute(
             "INSERT INTO employees(pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
-             meal_allow,transport_allow,active,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+             meal_allow,transport_allow,active,overtime_enabled,meal_enabled,transport_enabled,
+             created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             rusqlite::params![
                 emp.pin,
                 emp.name,
@@ -157,6 +283,9 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
                 emp.meal_allow,
                 emp.transport_allow,
                 emp.active as i64,
+                emp.overtime_enabled as i64,
+                emp.meal_enabled as i64,
+                emp.transport_enabled as i64,
                 now,
                 now
             ],
@@ -372,7 +501,8 @@ fn recompute_range(
             let mut stmt = conn
                 .prepare(
                     "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
-                     meal_allow,transport_allow,active FROM employees",
+                     meal_allow,transport_allow,active,
+                     overtime_enabled,meal_enabled,transport_enabled FROM employees",
                 )
                 .map_err(|e| e.to_string())?;
             let rows = stmt
@@ -389,6 +519,9 @@ fn recompute_range(
                         meal_allow: r.get(8)?,
                         transport_allow: r.get(9)?,
                         active: r.get::<_, i64>(10)? != 0,
+                        overtime_enabled: r.get::<_, i64>(11)? != 0,
+                        meal_enabled: r.get::<_, i64>(12)? != 0,
+                        transport_enabled: r.get::<_, i64>(13)? != 0,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -560,7 +693,9 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
     let mut stmt = conn
         .prepare(
             "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
-             meal_allow,transport_allow,active FROM employees WHERE active=1 ORDER BY name",
+             meal_allow,transport_allow,active,
+             overtime_enabled,meal_enabled,transport_enabled
+             FROM employees WHERE active=1 ORDER BY name",
         )
         .map_err(|e| e.to_string())?;
     let employees: Vec<Employee> = stmt
@@ -577,6 +712,9 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
                 meal_allow: r.get(8)?,
                 transport_allow: r.get(9)?,
                 active: r.get::<_, i64>(10)? != 0,
+                overtime_enabled: r.get::<_, i64>(11)? != 0,
+                meal_enabled: r.get::<_, i64>(12)? != 0,
+                transport_enabled: r.get::<_, i64>(13)? != 0,
             })
         })
         .map_err(|e| e.to_string())?
@@ -598,7 +736,16 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
         if emp.break_min >= 0 {
             ps_emp.break_min = emp.break_min;
         }
-        let mut res = compute_payroll(
+        // البدلات: مبالغ الموظف (تُشتقّ من الافتراضية عند الإنشاء)، وتُصفَّر عند الاستثناء
+        ps_emp.meal_allow = if emp.meal_enabled { emp.meal_allow } else { 0.0 };
+        ps_emp.transport_allow = if emp.transport_enabled { emp.transport_allow } else { 0.0 };
+        // مضاعف الإضافي: القيمة العامة ما لم يكون الإضافي معطّلاً لهذا الموظف (×1.0)
+        ps_emp.overtime_rate_mult = if emp.overtime_enabled {
+            ps.overtime_rate_mult
+        } else {
+            1.0
+        };
+        let res = compute_payroll(
             emp.id,
             &emp.name,
             emp.pin.clone(),
@@ -607,13 +754,6 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
             expected,
             &ps_emp,
         );
-        // البدلات من الموظف إن كانت مخصّصة
-        let daily = emp.meal_allow + emp.transport_allow;
-        if daily > 0.0 && (emp.meal_allow != ps.meal_allow || emp.transport_allow != ps.transport_allow)
-        {
-            res.allowances = daily * res.days_present as f64;
-            res.net_pay = res.base_pay + res.allowances - res.late_deduction - res.absence_deduction;
-        }
         out.push(res);
     }
     Ok(out)

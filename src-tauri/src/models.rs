@@ -14,6 +14,12 @@ pub struct Employee {
     pub meal_allow: f64,
     pub transport_allow: f64,
     pub active: bool,
+    /// تفعيل العمل الإضافي لهذا الموظف (الافتراضي مفعّل).
+    pub overtime_enabled: bool,
+    /// استحقاق بدل الفطور (الافتراضي نعم).
+    pub meal_enabled: bool,
+    /// استحقاق بدل المواصلات (الافتراضي نعم).
+    pub transport_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

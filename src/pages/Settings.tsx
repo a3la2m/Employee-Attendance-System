@@ -4,8 +4,12 @@ import {
   saveSettingsBulk,
   setCompanyLogo,
   listEmployees,
+  getStorageInfo,
+  setStorageDir,
+  backupNow,
+  restoreSettings,
 } from "../lib/api";
-import type { Employee, Settings } from "../lib/types";
+import type { Employee, Settings, StorageInfo } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
 
@@ -33,6 +37,8 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   const [cfg, setCfg] = useState<Settings>({});
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [newUser, setNewUser] = useState({ pin: "", name: "", job_title: "" });
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
+  const [busyStorage, setBusyStorage] = useState(false);
 
   const load = async () => {
     try {
@@ -41,6 +47,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
       toast(String(e), "err");
     }
     listEmployees().then(setEmployees).catch(() => {});
+    getStorageInfo().then(setStorage).catch(() => {});
   };
 
   useEffect(() => {
@@ -55,6 +62,52 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
       toast("تم حفظ جميع الإعدادات ✅");
     } catch (e) {
       toast(String(e), "err");
+    }
+  };
+
+  // اختيار مجلد التخزين (مثلاً مجلد Google Drive المتزامن)
+  const chooseStorageDir = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({ directory: true, multiple: false, title: "اختر مجلد التخزين" });
+      if (typeof dir === "string") {
+        setBusyStorage(true);
+        const info = await setStorageDir(dir);
+        setStorage(info);
+        toast(`نُقل التخزين إلى: ${info.storage_dir}`);
+      }
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyStorage(false);
+    }
+  };
+
+  // نسخة احتياطية متكاملة (قاعدة + إعدادات) في مجلد التخزين
+  const doBackup = async () => {
+    setBusyStorage(true);
+    try {
+      const r = await backupNow();
+      toast(`تم النسخ الاحتياطي ✅\n${r.db_backup}`, "ok");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyStorage(false);
+    }
+  };
+
+  const doRestore = async () => {
+    if (!confirm("استعادة الإعدادات من attendance-settings.json فوق الإعدادات الحالية؟"))
+      return;
+    setBusyStorage(true);
+    try {
+      const n = await restoreSettings();
+      toast(`تمت استعادة ${n} إعداداً — أعد تحميل الصفحة`);
+      load();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyStorage(false);
     }
   };
 
@@ -89,6 +142,9 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
         meal_allow: Number(cfg.meal_allow || 7),
         transport_allow: Number(cfg.transport_allow || 5),
         active: true,
+        overtime_enabled: true,
+        meal_enabled: true,
+        transport_enabled: true,
       });
       toast("أُضيف الموظف ورُبط برقم البصمة");
       setNewUser({ pin: "", name: "", job_title: "" });
@@ -133,6 +189,56 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* التخزين والنسخ الاحتياطي */}
+      <div className="card border-sky-200 bg-sky-50/40">
+        <h2 className="font-bold mb-1">💾 التخزين والنسخ الاحتياطي</h2>
+        <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+          كل الملفات في مجلد واحد بأسماء إنجليزية منظّمة — اختر مجلداً متزامناً مع{" "}
+          <b>Google Drive / Dropbox</b> ليتم النسخ التلقائي. أو اضغط «نسخ احتياطي الآن»
+          لتوليد اللقطة بنفسك.
+        </p>
+
+        <div className="space-y-2 text-sm bg-white rounded-lg border border-slate-200 p-3 font-mono">
+          <Row label="المجلد النشط" value={storage?.storage_dir || "…"} />
+          <Row label="قاعدة البيانات" value={storage?.db_path || "attendance.db"} />
+          <Row label="ملف الإعدادات" value={storage?.settings_json || "attendance-settings.json"} />
+          <Row label="ملف التهيئة" value={storage?.config_file || "storage-config.json"} />
+        </div>
+
+        <div className="flex flex-wrap gap-2 mt-4">
+          <button
+            className="btn-primary"
+            onClick={doBackup}
+            disabled={busyStorage}
+          >
+            🛟 نسخ احتياطي الآن
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={chooseStorageDir}
+            disabled={busyStorage}
+          >
+            📁 اختيار مجلد التخزين…
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={doRestore}
+            disabled={busyStorage}
+          >
+            ♻️ استعادة الإعدادات
+          </button>
+        </div>
+
+        <div className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+          ملفات النسخ الاحتياطي:{" "}
+          <code className="bg-white px-1 rounded">attendance-backup-YYYYMMDD-HHMMSS.db</code>{" "}
+          (لقطة القاعدة بـ VACUUM INTO، ثابتة وآمنة) +{" "}
+          <code className="bg-white px-1 rounded">attendance-settings.json</code>{" "}
+          (كل الإعدادات بصيغة JSON). المجلد الأساسي:{" "}
+          <span className="text-amber-700">{storage?.is_custom ? "مُخصَّص" : "افتراضي في مجلد التطبيق"}</span>.
         </div>
       </div>
 
@@ -215,6 +321,16 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** سطر عرض مسار في قسم التخزين. */
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex gap-2 items-baseline">
+      <span className="font-sans text-xs text-slate-500 shrink-0 w-28">{label}</span>
+      <span className="text-xs text-slate-800 break-all">{value}</span>
     </div>
   );
 }

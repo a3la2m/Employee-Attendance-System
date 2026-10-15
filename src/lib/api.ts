@@ -1,6 +1,7 @@
 // غلاف مبسّط لدوال Tauri invoke — كل استدعاء Rust command.
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  BackupResult,
   Dashboard,
   DailyRow,
   DeviceInfo,
@@ -8,6 +9,7 @@ import type {
   Leave,
   PayrollResult,
   Settings,
+  StorageInfo,
   SyncResult,
   TimeCheck,
   AttendanceDay,
@@ -19,6 +21,14 @@ export const saveSetting = (key: string, value: string) =>
   invoke<void>("save_setting", { key, value });
 export const saveSettingsBulk = (items: Record<string, string>) =>
   invoke<void>("save_settings_bulk", { items });
+
+// --- التخزين والنسخ الاحتياطي ---
+export const getStorageInfo = () => invoke<StorageInfo>("get_storage_info");
+export const setStorageDir = (dir: string) =>
+  invoke<StorageInfo>("set_storage_dir", { dir });
+export const backupNow = () => invoke<BackupResult>("backup_now");
+export const restoreSettings = (path?: string) =>
+  invoke<number>("restore_settings", { path: path ?? null });
 
 // --- الموظفون ---
 export const listEmployees = () => invoke<Employee[]>("list_employees");

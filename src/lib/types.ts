@@ -12,6 +12,12 @@ export interface Employee {
   meal_allow: number;
   transport_allow: number;
   active: boolean;
+  /** تفعيل العمل الإضافي (الافتراضي مفعّل؛ يُطفأ لموظف بعينه). */
+  overtime_enabled: boolean;
+  /** استحقاق بدل الفطور. */
+  meal_enabled: boolean;
+  /** استحقاق بدل المواصلات. */
+  transport_enabled: boolean;
 }
 
 export interface AttendanceDay {
@@ -106,3 +112,20 @@ export interface Leave {
 }
 
 export type Settings = Record<string, string>;
+
+/** معلومات مكان تخزين القاعدة + ملفات النسخ الاحتياطي. */
+export interface StorageInfo {
+  storage_dir: string;
+  db_path: string;
+  config_file: string;
+  settings_json: string;
+  is_custom: boolean;
+}
+
+/** نتيجة النسخ الاحتياطي المتكامل. */
+export interface BackupResult {
+  ok: boolean;
+  db_backup: string;
+  settings_json: string;
+  storage_dir: string;
+}

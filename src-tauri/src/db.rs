@@ -87,6 +87,28 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         "#,
     )?;
+
+    // ترحيل الأعمدة الجديدة (آمن — يتجاهل الخطأ إن كان العمود موجوداً)
+    migrate_column(conn, "employees", "overtime_enabled", "INTEGER NOT NULL DEFAULT 1")?;
+    migrate_column(conn, "employees", "meal_enabled", "INTEGER NOT NULL DEFAULT 1")?;
+    migrate_column(conn, "employees", "transport_enabled", "INTEGER NOT NULL DEFAULT 1")?;
+    Ok(())
+}
+
+/// يضيف عموداً إلى جدول إن لم يكن موجوداً (يضغط الأخطاء غير الحرجّة).
+fn migrate_column(conn: &Connection, table: &str, col: &str, def: &str) -> Result<()> {
+    // تحقّق أولاً من وجود العمود
+    let exists: bool = {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        names.iter().any(|n| n == col)
+    };
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, col, def), [])?;
+    }
     Ok(())
 }
 

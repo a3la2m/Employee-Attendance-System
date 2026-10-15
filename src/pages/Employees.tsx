@@ -16,6 +16,9 @@ const EMPTY: Employee = {
   meal_allow: 7,
   transport_allow: 5,
   active: true,
+  overtime_enabled: true,
+  meal_enabled: true,
+  transport_enabled: true,
 };
 
 export default function Employees({ toast }: { toast: Toast }) {
@@ -156,11 +159,13 @@ export default function Employees({ toast }: { toast: Toast }) {
               />
             </div>
             <div>
-              <label className="label">بدل فطور/مواصلات يومي</label>
+              <label className="label">البدلات اليومية (شيكل)</label>
               <div className="flex gap-2">
                 <input
                   type="number"
+                  step="0.5"
                   className="input"
+                  title="بدل الفطور"
                   value={form.meal_allow}
                   onChange={(e) =>
                     setForm({ ...form, meal_allow: Number(e.target.value) })
@@ -168,15 +173,64 @@ export default function Employees({ toast }: { toast: Toast }) {
                 />
                 <input
                   type="number"
+                  step="0.5"
                   className="input"
+                  title="بدل المواصلات"
                   value={form.transport_allow}
                   onChange={(e) =>
                     setForm({ ...form, transport_allow: Number(e.target.value) })
                   }
                 />
               </div>
+              <div className="flex justify-between text-[11px] text-slate-500 mt-1 px-0.5">
+                <span>فطور</span>
+                <span>مواصلات</span>
+              </div>
             </div>
           </div>
+
+          {/* مفاتيح التفعيل: العمل الإضافي + الاستثناء من كل بدل على حدة */}
+          <div className="mt-4 p-3 rounded-lg bg-white border border-slate-200">
+            <div className="text-xs font-bold text-slate-500 mb-2">
+              تفعيل/استثناء
+            </div>
+            <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.overtime_enabled}
+                  onChange={(e) =>
+                    setForm({ ...form, overtime_enabled: e.target.checked })
+                  }
+                />
+                <span>العمل الإضافي بمضاعفه</span>
+                {!form.overtime_enabled && (
+                  <span className="text-amber-600 text-xs">(بالسعر العادي)</span>
+                )}
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.meal_enabled}
+                  onChange={(e) =>
+                    setForm({ ...form, meal_enabled: e.target.checked })
+                  }
+                />
+                <span>بدل الفطور</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.transport_enabled}
+                  onChange={(e) =>
+                    setForm({ ...form, transport_enabled: e.target.checked })
+                  }
+                />
+                <span>بدل المواصلات</span>
+              </label>
+            </div>
+          </div>
+
           <div className="flex items-center gap-2 mt-4">
             <label className="flex items-center gap-2 text-sm">
               <input

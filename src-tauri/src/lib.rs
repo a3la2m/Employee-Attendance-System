@@ -8,6 +8,7 @@ mod commands;
 mod db;
 mod models;
 mod payroll;
+mod storage;
 mod zk;
 
 use commands::AppState;
@@ -182,15 +183,21 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
-            // قاعدة البيانات في مجلد بيانات التطبيق
-            let dir = app
+            // مجلد الإعدادات الأساسي (يحوي storage-config.json المؤشّر للمجلد المختار)
+            let base = app
                 .path()
-                .app_data_dir()
-                .expect("app_data_dir")
+                .app_config_dir()
+                .expect("app_config_dir")
                 .to_path_buf();
+            std::fs::create_dir_all(&base)?;
+            // المجلد النشط فعلياً (المختار من المستخدم أو الأساسي)
+            let dir = storage::resolve_dir(&base);
             std::fs::create_dir_all(&dir)?;
-            let conn = db::open(&dir.join("attendance.db"))?;
-            app.manage(AppState { db: Mutex::new(conn) });
+            let conn = db::open(&dir.join(storage::MAIN_DB))?;
+            app.manage(AppState {
+                db: Mutex::new(conn),
+                base,
+            });
 
             // صينية النظام + نافذة رئيسية
             if let Err(e) = build_tray(app.handle()) {
@@ -209,6 +216,10 @@ pub fn run() {
             commands::get_settings,
             commands::save_setting,
             commands::save_settings_bulk,
+            commands::get_storage_info,
+            commands::set_storage_dir,
+            commands::backup_now,
+            commands::restore_settings,
             commands::list_employees,
             commands::upsert_employee,
             commands::delete_employee,
