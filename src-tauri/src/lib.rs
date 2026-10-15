@@ -141,7 +141,7 @@ fn watch_new_windows_users(app: tauri::AppHandle) {
                             "new-windows-user",
                             serde_json::json!({"sid": name, "profile": display}),
                         );
-                        if let Ok(state) = app.try_state::<AppState>() {
+                        if let Some(state) = app.try_state::<AppState>() {
                             let _ = state.db.lock().map(|conn| {
                                 let _ = crate::db::set_setting(
                                     &conn,
