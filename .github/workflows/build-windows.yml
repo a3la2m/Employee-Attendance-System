@@ -69,10 +69,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           # GitHub يقتطع عند 10 annotations لكل خطوة — نضع السجل كاملاً في
           # annotation واحد متعدد الأسطر عبر ترميز %0A فلا يُقتطع.
-          emit() { # $1=عنوان $2=ملف
-            { echo "::error title=$1::"; tail -n 150 "$2" | sed -e 's/%/%25/g' -e 's/\r$//' | awk '{printf "%s%%0A", $0}'; echo ""; }
+          # ملاحظة: العنوان والرسالة يجب أن يكونا في السطر نفسه (::error title=..::MSG)
+          emit() { # $1=عنوان ASCII $2=ملف
+            printf '::error title=%s::' "$1"
+            tail -n 150 "$2" | sed -e 's/%/%25/g' -e 's/\r$//' | awk '{printf "%s%%0A", $0}'
+            printf '\n'
           }
-          emit "RAW-TAIL-60 (أين مات البناء)" build_clean.log
+          emit "RAW-TAIL-60-where-build-died" build_clean.log
           emit "NOISE-FILTERED-150" build_signal.log
           grep -n -E "error(\[:]|:)|Error:|FAILED|panicked|No space|memory|Killed|signal" build_clean.log > build_errors.log
           emit "ERROR-MATCHES" build_errors.log
