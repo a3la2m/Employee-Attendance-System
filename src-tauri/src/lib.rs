@@ -181,7 +181,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--background"]),
         ))
         .setup(|app| {
             // مجلد الإعدادات الأساسي (يحوي storage-config.json المؤشّر للمجلد المختار)
@@ -200,13 +200,20 @@ pub fn run() {
                 base,
             });
 
-            // صينية النظام + نافذة رئيسية
+            // أيقونة شريط الإشعارات
             if let Err(e) = build_tray(app.handle()) {
                 log::warn!("tray failed: {e}");
             }
-            // إخفاء النافذة عند بدء التشغيل (تعمل في الخلفية)
+            // الإقلاع التلقائي يمرّر ‎--background → يبدأ في الخلفية بلا نافذة؛
+            // التشغيل اليدوي يُظهر النافذة دائماً.
+            let start_background = std::env::args().any(|a| a == "--background");
             if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide();
+                if start_background {
+                    let _ = w.hide();
+                } else {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
             }
 
             spawn_auto_sync(app.handle().clone());
@@ -242,6 +249,21 @@ pub fn run() {
             commands::server_time,
             commands::import_punches_csv,
         ])
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // الإغلاق = الإخفاء إلى شريط النظام (يواصل العمل في الخلفية)
+                api.prevent_close();
+                window.hide();
+                use tauri_plugin_notification::NotificationExt;
+                let _ = window
+                    .app_handle()
+                    .notification()
+                    .builder()
+                    .title("نظام الحضور والرواتب")
+                    .body("يعمل التطبيق في الخلفية — نقرة مزدوجة على أيقونته في شريط الإشعارات تُظهره، وقائمة أيمن بها «خروج» تنهيه.")
+                    .show();
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

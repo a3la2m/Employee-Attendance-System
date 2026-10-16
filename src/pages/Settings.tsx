@@ -37,6 +37,8 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   const [cfg, setCfg] = useState<Settings>({});
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [newUser, setNewUser] = useState({ pin: "", name: "", job_title: "" });
+  const [autostart, setAutostart] = useState(false);
+  const [autostartBusy, setAutostartBusy] = useState(false);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [busyStorage, setBusyStorage] = useState(false);
 
@@ -52,7 +54,31 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
 
   useEffect(() => {
     load();
+    import("@tauri-apps/plugin-autostart")
+      .then((m) => m.isEnabled())
+      .then(setAutostart)
+      .catch(() => {});
   }, []);
+
+  const toggleAutostart = async () => {
+    setAutostartBusy(true);
+    try {
+      const m = await import("@tauri-apps/plugin-autostart");
+      if (autostart) {
+        await m.disable();
+        setAutostart(false);
+        toast("أُلغي التشغيل التلقائي عند بدء النظام");
+      } else {
+        await m.enable();
+        setAutostart(true);
+        toast("سيعمل التطبيق تلقائياً عند بدء النظام (في الخلفية) ✅", "ok");
+      }
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setAutostartBusy(false);
+    }
+  };
 
   const set = (k: string, v: string) => setCfg((c) => ({ ...c, [k]: v }));
 
@@ -280,6 +306,25 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* التشغيل التلقائي */}
+      <div className="card">
+        <h2 className="font-bold mb-1">🚀 التشغيل التلقائي</h2>
+        <p className="text-xs text-slate-500 mb-3">
+          عند تفعيله يعمل التطبيق في الخلفية فور تسجيل الدخول (أيقونة في شريط الإشعارات بلا
+          نافذة). زر الإغلاق يخفي النافذة فقط — يبقى يعمل، و«خروج» من قائمة الأيقونة ينهيه.
+        </p>
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input
+            type="checkbox"
+            checked={autostart}
+            disabled={autostartBusy}
+            onChange={toggleAutostart}
+            className="accent-indigo-600 w-4 h-4"
+          />
+          بدء تشغيل التطبيق تلقائياً مع تشغيل النظام
+        </label>
       </div>
 
       {/* المستخدم الجديد في ويندوز */}
