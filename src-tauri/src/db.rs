@@ -118,6 +118,7 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         ("daily_hours", "8.5"),
         ("break_min", "30"),
         ("hourly_rate", "10.0"),
+        ("currency", "ILS"),
         ("meal_allow", "7.0"),
         ("transport_allow", "5.0"),
         ("overtime_after_hours", "8.5"),

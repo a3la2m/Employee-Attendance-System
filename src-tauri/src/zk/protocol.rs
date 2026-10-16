@@ -263,6 +263,52 @@ impl ZkProtocol {
         };
         Ok((g(4), g(6), g(8))) // users, fingers, records
     }
+
+    /// كل سجلات المستخدمين مع الـ uid الخام — يُستعمل أيضاً لإعادة استخدام
+    /// نفس الـ uid عند تحديث اسم مستخدم موجود (وإلا خلق الجهاز سجلاً مكرراً).
+    fn pull_user_records(&mut self) -> Result<Vec<(u16, String, String, u32, i64, [u8; 8])>> {
+        let data = self.read_with_buffer(CMD_USERTEMP_RRQ, FCT_USER)?;
+        if data.len() < 4 {
+            return Ok(vec![]);
+        }
+        let total = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let (users, _, _) = self.read_sizes().unwrap_or((0, 0, 0));
+        let psize = if users > 0 { total / users as usize } else { 72 };
+        let body = &data[4..];
+        let mut out = Vec::new();
+        if psize == 72 {
+            // تخطيط zk8 الرسمي (pyzk: unpack '<HB8s24sIx7sx24s'):
+            // uid(u16)@0، privilege@2، password@3..11، name@11..35،
+            // card(u32)@35..39، group@40..47، pin/user_id@48..72
+            for c in body.chunks_exact(72) {
+                let uid = u16::from_le_bytes([c[0], c[1]]);
+                let privilege = c[2] as i64;
+                let password: [u8; 8] = c[3..11].try_into().unwrap();
+                let name = bytes_to_str(&c[11..35]);
+                let card = u32::from_le_bytes([c[35], c[36], c[37], c[38]]);
+                let user_id = bytes_to_str(&c[48..72]);
+                let pin = if user_id.is_empty() { uid.to_string() } else { user_id };
+                out.push((uid, pin, name, card, privilege, password));
+            }
+        } else if psize == 28 {
+            // zk6: '<HB5s8sIxBhI' — pin = user_id رقمي@24، password@3..8 (5 بايت)
+            for c in body.chunks_exact(28) {
+                let uid = u16::from_le_bytes([c[0], c[1]]);
+                let privilege = c[2] as i64;
+                let mut password = [0u8; 8];
+                password[..5].copy_from_slice(&c[3..8]);
+                let name = bytes_to_str(&c[8..16]);
+                let uid_num = u32::from_le_bytes([c[24], c[25], c[26], c[27]]);
+                let pin = if uid_num != 0 {
+                    uid_num.to_string()
+                } else {
+                    uid.to_string()
+                };
+                out.push((uid, pin, name, 0, privilege, password));
+            }
+        }
+        Ok(out)
+    }
 }
 
 impl DeviceBackend for ZkProtocol {
@@ -309,44 +355,11 @@ impl DeviceBackend for ZkProtocol {
     }
 
     fn pull_users(&mut self) -> Result<Vec<RawUser>> {
-        let data = self.read_with_buffer(CMD_USERTEMP_RRQ, FCT_USER)?;
-        if data.len() < 4 {
-            return Ok(vec![]);
-        }
-        let total = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let (users, _, _) = self.read_sizes().unwrap_or((0, 0, 0));
-        let psize = if users > 0 { total / users as usize } else { 72 };
-        let body = &data[4..];
-        let mut out = Vec::new();
-        if psize == 72 {
-            // تخطيط zk8 الرسمي (pyzk: unpack '<HB8s24sIx7sx24s'):
-            // uid(u16)@0، privilege@2، password@3..11، name@11..35،
-            // card(u32)@35..39، group@40..47، pin/user_id@48..72
-            for c in body.chunks_exact(72) {
-                let uid = u16::from_le_bytes([c[0], c[1]]) as i64;
-                let privilege = c[2] as i64;
-                let name = bytes_to_str(&c[11..35]);
-                let card = u32::from_le_bytes([c[35], c[36], c[37], c[38]]);
-                let user_id = bytes_to_str(&c[48..72]);
-                let pin = if user_id.is_empty() { uid.to_string() } else { user_id };
-                out.push((pin, name, card, privilege));
-            }
-        } else if psize == 28 {
-            // zk6: '<HB5s8sIxBhI' — pin = user_id رقمي@24
-            for c in body.chunks_exact(28) {
-                let uid = u16::from_le_bytes([c[0], c[1]]) as i64;
-                let privilege = c[2] as i64;
-                let name = bytes_to_str(&c[8..16]);
-                let uid_num = u32::from_le_bytes([c[24], c[25], c[26], c[27]]);
-                let pin = if uid_num != 0 {
-                    uid_num.to_string()
-                } else {
-                    uid.to_string()
-                };
-                out.push((pin, name, 0, privilege));
-            }
-        }
-        Ok(out)
+        Ok(self
+            .pull_user_records()?
+            .into_iter()
+            .map(|(_, pin, name, card, privilege, _)| (pin, name, card, privilege))
+            .collect())
     }
 
     fn pull_attendance(&mut self) -> Result<Vec<RawPunch>> {
@@ -441,16 +454,34 @@ impl DeviceBackend for ZkProtocol {
         Ok(())
     }
 
+    /// إرسال/تحديث مستخدم على الجهاز: نبحث عن uid المحفوظ لهذا الـpin
+    /// (وإلا لخلق الجهاز سجلاً مكرراً) ونحافظ على امتيازه وبطاقته.
     fn add_user(&mut self, pin: &str, name: &str) -> Result<()> {
-        // حزمة المستخدم 72 بايت (zk8)
+        let existing = self.pull_user_records().unwrap_or_default();
+        let found = existing.iter().find(|(_, p, ..)| p == pin);
+        let (uid, privilege, card, password) = match found {
+            Some((u, _, _, card, pv, pw)) => (*u, (*pv).min(255) as u8, *card, *pw),
+            None => (pin.parse().unwrap_or(0), 0u8, 0u32, [0u8; 8]),
+        };
+        // حزمة 72 بايت بالترتيب الرسمي pyzk '<HB8s24sIx7sx24s'
         let mut c = vec![0u8; 72];
-        let uid: u16 = pin.parse().unwrap_or(0);
         c[0..2].copy_from_slice(&uid.to_le_bytes());
-        c[2] = 0; // privilege = user
+        c[2] = privilege;
+        c[3..11].copy_from_slice(&password);
         let nb = name.as_bytes();
-        c[13..13 + nb.len().min(24)].copy_from_slice(&nb[..nb.len().min(24)]);
+        let mut nlen = nb.len().min(24);
+        // لا نقطع حرف UTF-8 في منتصفه: نتراجع لآخر حدّ حرف سليم
+        while nlen > 0 && nlen < nb.len() && (nb[nlen] & 0xC0) == 0x80 {
+            nlen -= 1;
+        }
+        c[11..11 + nlen].copy_from_slice(&nb[..nlen]);
+        c[35..39].copy_from_slice(&card.to_le_bytes());
         let pb = pin.as_bytes();
-        c[53..53 + pb.len().min(24)].copy_from_slice(&pb[..pb.len().min(24)]);
+        let mut plen = pb.len().min(24);
+        while plen > 0 && plen < pb.len() && (pb[plen] & 0xC0) == 0x80 {
+            plen -= 1;
+        }
+        c[48..48 + plen].copy_from_slice(&pb[..plen]);
         let (cmd, _) = self.command(CMD_USER_WRQ, &c)?;
         if cmd != CMD_ACK_OK {
             return Err(anyhow!("add_user rejected"));
@@ -529,5 +560,53 @@ mod tests {
         let now_iso = d.get_time_iso().expect("get_time failed");
         println!("device clock: {now_iso}");
         d.close();
+    }
+
+    /// اختبار حيّ لزر «إرسال الاسم إلى الجهاز»: يرسل اسماً عربياً للمستخدم
+    /// pin=9999 ثم يتحقق من (عدم خلق مستخدم مكرر + uid + الامتياز + البطاقة
+    /// + كلمة السر)، ثم يُرجع الاسم الأصلي كما كان. يتجاهله CI:
+    /// ZK_IP=192.168.1.205 cargo test live_push -- --ignored --nocapture
+    #[test]
+    #[ignore = "يحتاج جهاز بصمة على الشبكة"]
+    fn live_push_user_smoke() {
+        let ip = std::env::var("ZK_IP").unwrap_or_else(|_| "192.168.1.205".to_string());
+        let mut zk = ZkProtocol::new(&ip, 4370, 0);
+        zk.connect().expect("connect failed");
+
+        let before = zk.pull_user_records().expect("pull before");
+        println!("قبل: {} مستخدمين", before.len());
+        let t0 = before
+            .iter()
+            .find(|(_, p, ..)| p == "9999")
+            .expect("المستخدم pin=9999 غير موجود");
+        let (uid0, card0, priv0, pw0, name0) = (t0.0, t0.3, t0.4, t0.5, t0.2.clone());
+        println!("  uid={uid0} priv={priv0} card={card0} name={name0:?} pw={pw0:?}");
+
+        zk.add_user("9999", "اختبار عربي").expect("add_user failed");
+
+        let mid = zk.pull_user_records().expect("pull after push");
+        assert_eq!(mid.len(), before.len(), "ممنوع إنشاء مستخدم مكرر");
+        let t1 = mid
+            .iter()
+            .find(|(_, p, ..)| p == "9999")
+            .expect("المستخدم اختفى بعد الإرسال!");
+        println!("بعد الإرسال: uid={} priv={} name={:?}", t1.0, t1.4, t1.2);
+        assert_eq!(t1.0, uid0, "يجب إعادة استخدام نفس uid");
+        assert_eq!(t1.2, "اختبار عربي", "الاسم العربي يُخزَّن كما أُرسل (UTF-8)");
+        assert_eq!(t1.4, priv0, "الحفاظ على الامتياز");
+        assert_eq!(t1.3, card0, "الحفاظ على البطاقة");
+        assert_eq!(t1.5, pw0, "الحفاظ على كلمة السر");
+
+        zk.add_user("9999", &name0).expect("restore failed");
+        let after = zk.pull_user_records().expect("pull after restore");
+        assert_eq!(after.len(), before.len());
+        let t2 = after
+            .iter()
+            .find(|(_, p, ..)| p == "9999")
+            .expect("المستخدم اختفى بعد الاسترجاع!");
+        assert_eq!(t2.2, name0, "استرجاع الاسم الأصلي");
+        assert_eq!(t2.0, uid0);
+        zk.close();
+        println!("LIVE PUSH TEST OK");
     }
 }

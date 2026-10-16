@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { listEmployees, upsertEmployee, deleteEmployee } from "../lib/api";
+import {
+  listEmployees,
+  upsertEmployee,
+  deleteEmployee,
+  getSettings,
+  pushUserToDevice,
+} from "../lib/api";
 import type { Employee } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
@@ -25,6 +31,8 @@ export default function Employees({ toast }: { toast: Toast }) {
   const [rows, setRows] = useState<Employee[]>([]);
   const [form, setForm] = useState<Employee | null>(null);
   const [q, setQ] = useState("");
+  const [cur, setCur] = useState("ILS");
+  const [busyPush, setBusyPush] = useState(false);
 
   const load = () =>
     listEmployees()
@@ -33,7 +41,27 @@ export default function Employees({ toast }: { toast: Toast }) {
 
   useEffect(() => {
     load();
+    getSettings()
+      .then((s) => setCur(s.currency || "ILS"))
+      .catch(() => {});
   }, []);
+
+  const curSym = cur === "USD" ? "$" : cur === "JOD" ? "د.أ" : "₪";
+
+  // إرسال الاسم المحرَّر إلى الجهاز فعلياً (يظهر على شاشته عند البصم)
+  const pushToDevice = async () => {
+    if (!form) return;
+    if (!form.pin?.trim()) return toast("أدخل رقم البصمة أولاً", "err");
+    setBusyPush(true);
+    try {
+      const msg = await pushUserToDevice(form.pin, form.name.trim());
+      toast(msg, "ok");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyPush(false);
+    }
+  };
 
   const save = async () => {
     if (!form) return;
@@ -147,7 +175,7 @@ export default function Employees({ toast }: { toast: Toast }) {
               />
             </div>
             <div>
-              <label className="label">سعر الساعة (شيكل)</label>
+              <label className="label">سعر الساعة ({curSym})</label>
               <input
                 type="number"
                 step="0.5"
@@ -159,7 +187,7 @@ export default function Employees({ toast }: { toast: Toast }) {
               />
             </div>
             <div>
-              <label className="label">البدلات اليومية (شيكل)</label>
+              <label className="label">البدلات اليومية ({curSym})</label>
               <div className="flex gap-2">
                 <input
                   type="number"
@@ -241,6 +269,14 @@ export default function Employees({ toast }: { toast: Toast }) {
               نشط
             </label>
             <div className="flex-1" />
+            <button
+              className="btn-ghost"
+              onClick={pushToDevice}
+              disabled={busyPush}
+              title="يحدّث اسم الموظف على الجهاز ليدخل عند البصم"
+            >
+              {busyPush ? "جارٍ الإرسال…" : "📤 إرسال الاسم إلى الجهاز"}
+            </button>
             <button className="btn-ghost" onClick={() => setForm(null)}>
               إلغاء
             </button>

@@ -233,6 +233,7 @@ pub fn run() {
             commands::delete_employee,
             commands::device_info,
             commands::sync_device,
+            commands::push_user_to_device,
             commands::check_time_sync,
             commands::fix_device_time,
             commands::recompute_days,
@@ -253,7 +254,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // الإغلاق = الإخفاء إلى شريط النظام (يواصل العمل في الخلفية)
                 api.prevent_close();
-                window.hide();
+                let _ = window.hide();
                 use tauri_plugin_notification::NotificationExt;
                 let _ = window
                     .app_handle()

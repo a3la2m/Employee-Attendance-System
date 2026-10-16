@@ -17,7 +17,7 @@ type Toast = (m: string, t?: "ok" | "err") => void;
 const PAYROLL_KEYS = [
   { k: "daily_hours", label: "ساعات الدوام الأساسية", step: "0.25" },
   { k: "break_min", label: "فترة الخصم (استراحة) بالدقائق", step: "1" },
-  { k: "hourly_rate", label: "سعر الساعة (شيكل)", step: "0.5" },
+  { k: "hourly_rate", label: "سعر الساعة", step: "0.5" },
   { k: "meal_allow", label: "بدل الفطور اليومي", step: "0.5" },
   { k: "transport_allow", label: "بدل المواصلات اليومي", step: "0.5" },
   { k: "overtime_after_hours", label: "العمل الإضافي بعد (ساعة)", step: "0.25" },
@@ -81,6 +81,8 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   };
 
   const set = (k: string, v: string) => setCfg((c) => ({ ...c, [k]: v }));
+  const curSym =
+    cfg.currency === "USD" ? "$" : cfg.currency === "JOD" ? "د.أ" : "₪";
 
   const saveAll = async () => {
     try {
@@ -275,9 +277,23 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
           كل هذه القيم افتراضية وقابلة للتعديل، وتُطبَّق فوراً على حساب الكشف.
         </p>
         <div className="grid sm:grid-cols-4 gap-4">
+          <div>
+            <label className="label">العملة</label>
+            <select
+              className="input"
+              value={cfg.currency || "ILS"}
+              onChange={(e) => set("currency", e.target.value)}
+            >
+              <option value="ILS">₪ شيكل (ILS)</option>
+              <option value="USD">$ دولار (USD)</option>
+              <option value="JOD">د.أ دينار أردني (JOD)</option>
+            </select>
+          </div>
           {PAYROLL_KEYS.map((f) => (
             <div key={f.k}>
-              <label className="label">{f.label}</label>
+              <label className="label">
+                {f.k === "hourly_rate" ? `سعر الساعة (${curSym})` : f.label}
+              </label>
               <input
                 type="number"
                 step={f.step}

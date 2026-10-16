@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getPayroll, archivePayroll, recomputeDays } from "../lib/api";
+import { getPayroll, archivePayroll, recomputeDays, getSettings } from "../lib/api";
 import type { PayrollResult } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
@@ -14,6 +14,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
   const [period, setPeriod] = useState(thisPeriod);
   const [rows, setRows] = useState<PayrollResult[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cur, setCur] = useState("ILS");
 
   const load = async () => {
     try {
@@ -25,7 +26,12 @@ export default function Payroll({ toast }: { toast: Toast }) {
 
   useEffect(() => {
     load();
+    getSettings()
+      .then((s) => setCur(s.currency || "ILS"))
+      .catch(() => {});
   }, [period]);
+
+  const curSym = cur === "USD" ? "$" : cur === "JOD" ? "د.أ" : "₪";
 
   const recalc = async () => {
     setBusy(true);
@@ -84,21 +90,31 @@ export default function Payroll({ toast }: { toast: Toast }) {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="card">
           <div className="text-xs text-slate-500">إجمالي الأساسي</div>
-          <div className="text-xl font-extrabold">{n(totalBase)}</div>
+          <div className="text-xl font-extrabold">
+            {n(totalBase)}{" "}
+            <span className="text-base font-bold opacity-60">{curSym}</span>
+          </div>
         </div>
         <div className="card">
           <div className="text-xs text-slate-500">إجمالي البدلات</div>
           <div className="text-xl font-extrabold text-emerald-600">
-            {n(totalAllow)}
+            {n(totalAllow)}{" "}
+            <span className="text-base font-bold opacity-60">{curSym}</span>
           </div>
         </div>
         <div className="card">
           <div className="text-xs text-slate-500">إجمالي الخصومات</div>
-          <div className="text-xl font-extrabold text-rose-600">{n(totalDeduct)}</div>
+          <div className="text-xl font-extrabold text-rose-600">
+            {n(totalDeduct)}{" "}
+            <span className="text-base font-bold opacity-60">{curSym}</span>
+          </div>
         </div>
         <div className="card border-indigo-200 bg-indigo-50">
           <div className="text-xs text-indigo-600">إجمالي الصافي</div>
-          <div className="text-xl font-extrabold text-indigo-700">{n(totalNet)}</div>
+          <div className="text-xl font-extrabold text-indigo-700">
+            {n(totalNet)}{" "}
+            <span className="text-base font-bold opacity-60">{curSym}</span>
+          </div>
         </div>
       </div>
 
@@ -110,11 +126,11 @@ export default function Payroll({ toast }: { toast: Toast }) {
               <th className="th">أيام الحضور</th>
               <th className="th">ساعات فعلية</th>
               <th className="th">إضافي</th>
-              <th className="th">الأساسي</th>
-              <th className="th">البدلات</th>
-              <th className="th">تأخير</th>
-              <th className="th">غياب</th>
-              <th className="th">الصافي</th>
+              <th className="th">الأساسي ({curSym})</th>
+              <th className="th">البدلات ({curSym})</th>
+              <th className="th">تأخير ({curSym})</th>
+              <th className="th">غياب ({curSym})</th>
+              <th className="th">الصافي ({curSym})</th>
             </tr>
           </thead>
           <tbody>

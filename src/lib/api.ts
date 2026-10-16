@@ -40,6 +40,8 @@ export const deleteEmployee = (id: number) =>
 // --- الجهاز ---
 export const deviceInfo = () => invoke<DeviceInfo>("device_info");
 export const syncDevice = () => invoke<SyncResult>("sync_device");
+export const pushUserToDevice = (pin: string, name: string) =>
+  invoke<string>("push_user_to_device", { pin, name });
 export const checkTimeSync = () => invoke<TimeCheck>("check_time_sync");
 export const fixDeviceTime = () =>
   invoke<{ set_to: string; device_time_after: string }>("fix_device_time");

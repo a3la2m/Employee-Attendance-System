@@ -422,6 +422,29 @@ pub fn sync_device(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     sync_device_internal(&state)
 }
 
+/// إرسال/تحديث اسم الموظف على جهاز البصمة حسب رقم البصمة (USER_WRQ).
+#[tauri::command]
+pub fn push_user_to_device(
+    state: tauri::State<'_, AppState>,
+    pin: String,
+    name: String,
+) -> Result<String, String> {
+    let (ip, port, key) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let s = settings_map(&conn);
+        (
+            setting(&s, "device_ip", "192.168.1.205"),
+            setting_i(&s, "device_port", 4370) as u16,
+            setting_i(&s, "device_comm_key", 0) as u32,
+        )
+    };
+    let mut backend = make_backend(&ip, port, key, true);
+    backend.connect().map_err(|e| format!("تعذر الاتصال: {e}"))?;
+    backend.add_user(&pin, &name).map_err(|e| e.to_string())?;
+    backend.close();
+    Ok(format!("أُرسل الاسم إلى الجهاز للرقم {pin}"))
+}
+
 /// يقرأ ساعة الجهاز ويقارنها بمنطقة Asia/Jerusalem المحددة.
 #[tauri::command]
 pub fn check_time_sync(state: tauri::State<'_, AppState>) -> Result<Value, String> {
