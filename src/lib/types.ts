@@ -4,6 +4,8 @@ export interface Employee {
   id: number;
   pin: string | null;
   name: string;
+  /** الاسم اللاتيني المخصص لجهاز البصمة (لا يدعم العربية). */
+  name_en: string;
   job_title: string;
   phone: string;
   daily_hours: number;

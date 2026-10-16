@@ -92,6 +92,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     migrate_column(conn, "employees", "overtime_enabled", "INTEGER NOT NULL DEFAULT 1")?;
     migrate_column(conn, "employees", "meal_enabled", "INTEGER NOT NULL DEFAULT 1")?;
     migrate_column(conn, "employees", "transport_enabled", "INTEGER NOT NULL DEFAULT 1")?;
+    // الاسم اللاتيني للشاشة التي لا تدعم العربية (يُرسل إلى الجهاز)
+    migrate_column(conn, "employees", "name_en", "TEXT NOT NULL DEFAULT ''")?;
     Ok(())
 }
 

@@ -162,6 +162,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
         id: 0,
         pin: newUser.pin,
         name: newUser.name,
+        name_en: "",
         job_title: newUser.job_title,
         phone: "",
         daily_hours: Number(cfg.daily_hours || 8.5),

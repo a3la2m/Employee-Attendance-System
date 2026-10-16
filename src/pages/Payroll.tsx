@@ -8,7 +8,7 @@ const now = new Date();
 const thisPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
 const n = (v: number) =>
-  v.toLocaleString("ar-IQ", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function Payroll({ toast }: { toast: Toast }) {
   const [period, setPeriod] = useState(thisPeriod);

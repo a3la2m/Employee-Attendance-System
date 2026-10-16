@@ -6,6 +6,8 @@ pub struct Employee {
     pub id: i64,
     pub pin: Option<String>,
     pub name: String,
+    /// الاسم اللاتيني المخصص لجهاز البصمة (لا يدعم العربية).
+    pub name_en: String,
     pub job_title: String,
     pub phone: String,
     pub daily_hours: f64,

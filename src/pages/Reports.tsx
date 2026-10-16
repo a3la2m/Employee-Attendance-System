@@ -14,7 +14,7 @@ const thisPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2
 const today = now.toISOString().slice(0, 10);
 
 const n = (v: number) =>
-  v.toLocaleString("ar-IQ", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const tfmt = (iso: string | null) => (iso ? (iso.split("T")[1] || "").slice(0, 5) : "—");
 const hm = (m: number) => (m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}` : "—");
 

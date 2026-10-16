@@ -252,6 +252,7 @@ pub fn run() {
             commands::device_info,
             commands::sync_device,
             commands::push_user_to_device,
+            commands::employee_punches,
             commands::check_time_sync,
             commands::fix_device_time,
             commands::recompute_days,

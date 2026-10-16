@@ -170,11 +170,37 @@ pub fn check_device_clock(device_time: &str, tz_name: &str) -> (String, i64) {
     let now_str = now_local.format("%Y-%m-%dT%H:%M:%S").to_string();
     let diff = match dev {
         Some(d) => {
-            let now_naive_utc = chrono::Utc::now().naive_utc();
-            let dev_as_utc = d; // نعامل وقت الجهاز كـ UTC مقارنة
-            (now_naive_utc - dev_as_utc).num_minutes()
+            // ساعة الجهاز تعرض وقتاً محلياً (جداري) — نقارنه بوقتنا المحلي
+            // لا بـ UTC، وإلا ظهر فرق يساوي إزاحة المنطقة (مثل ‑179 دقيقة)
+            let now_local_naive = chrono::Utc::now().with_timezone(&tz).naive_local();
+            (now_local_naive - d).num_minutes()
         }
         None => 0,
     };
     (now_str, diff)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// وقت الجهاز المطابق تماماً لوقتنا المحلي = فرق صفر.
+    /// (كان -179 دقيقة لأن المقارنة تتم مع UTC بدل الوقت الجداري المحلي.)
+    #[test]
+    fn device_clock_diff_uses_wall_clock() {
+        let local = chrono::Utc::now().with_timezone(&chrono_tz::Asia::Jerusalem);
+        let dev = local.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (_, diff) = check_device_clock(&dev, "Asia/Jerusalem");
+        assert!(diff.abs() <= 1, "diff={diff} لوقت متطابق يجب أن يكون ~0");
+    }
+
+    /// ساعة متأخرة 30 دقيقة تُعطي فرقاً موجباً 30 (المحلي ناقص الجهاز).
+    #[test]
+    fn device_clock_diff_detects_lag() {
+        let local = chrono::Utc::now().with_timezone(&chrono_tz::Asia::Jerusalem);
+        let lagged = local - chrono::Duration::minutes(30);
+        let dev = lagged.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let (_, diff) = check_device_clock(&dev, "Asia/Jerusalem");
+        assert!((29..=31).contains(&diff), "diff={diff}");
+    }
 }

@@ -207,7 +207,7 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
+            "SELECT id,pin,name,name_en,job_title,phone,daily_hours,break_min,hourly_rate,
                     meal_allow,transport_allow,active,
                     overtime_enabled,meal_enabled,transport_enabled
              FROM employees ORDER BY name",
@@ -219,17 +219,18 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
                 id: r.get(0)?,
                 pin: r.get(1)?,
                 name: r.get(2)?,
-                job_title: r.get(3)?,
-                phone: r.get(4)?,
-                daily_hours: r.get(5)?,
-                break_min: r.get(6)?,
-                hourly_rate: r.get(7)?,
-                meal_allow: r.get(8)?,
-                transport_allow: r.get(9)?,
-                active: r.get::<_, i64>(10)? != 0,
-                overtime_enabled: r.get::<_, i64>(11)? != 0,
-                meal_enabled: r.get::<_, i64>(12)? != 0,
-                transport_enabled: r.get::<_, i64>(13)? != 0,
+                name_en: r.get(3)?,
+                job_title: r.get(4)?,
+                phone: r.get(5)?,
+                daily_hours: r.get(6)?,
+                break_min: r.get(7)?,
+                hourly_rate: r.get(8)?,
+                meal_allow: r.get(9)?,
+                transport_allow: r.get(10)?,
+                active: r.get::<_, i64>(11)? != 0,
+                overtime_enabled: r.get::<_, i64>(12)? != 0,
+                meal_enabled: r.get::<_, i64>(13)? != 0,
+                transport_enabled: r.get::<_, i64>(14)? != 0,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -244,8 +245,8 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
         conn.execute(
             "UPDATE employees SET pin=?1,name=?2,job_title=?3,phone=?4,daily_hours=?5,
              break_min=?6,hourly_rate=?7,meal_allow=?8,transport_allow=?9,active=?10,updated_at=?11,
-             overtime_enabled=?12,meal_enabled=?13,transport_enabled=?14
-             WHERE id=?15",
+             overtime_enabled=?12,meal_enabled=?13,transport_enabled=?14,name_en=?15
+             WHERE id=?16",
             rusqlite::params![
                 emp.pin,
                 emp.name,
@@ -261,6 +262,7 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
                 emp.overtime_enabled as i64,
                 emp.meal_enabled as i64,
                 emp.transport_enabled as i64,
+                emp.name_en,
                 emp.id
             ],
         )
@@ -268,13 +270,14 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
         Ok(emp.id)
     } else {
         conn.execute(
-            "INSERT INTO employees(pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
+            "INSERT INTO employees(pin,name,name_en,job_title,phone,daily_hours,break_min,hourly_rate,
              meal_allow,transport_allow,active,overtime_enabled,meal_enabled,transport_enabled,
              created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             rusqlite::params![
                 emp.pin,
                 emp.name,
+                emp.name_en,
                 emp.job_title,
                 emp.phone,
                 emp.daily_hours,
@@ -344,11 +347,14 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     let mut synced_punches = 0usize;
     let mut added_users = 0usize;
+
+    // المرحلة الأولى (قصيرة): ربط الأرقام + إضافة مستخدمي الجهاز الجدد —
+    // نُطلق القفل بسرعة حتى لا تتجمّد الواجهة أثناء السحب الكبير
+    let mut pin_to_id: HashMap<String, i64> = HashMap::new();
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
 
         // اربط pin → employee_id (إن وُجد)
-        let mut pin_to_id: HashMap<String, i64> = HashMap::new();
         {
             let mut st = conn
                 .prepare("SELECT id, pin FROM employees WHERE pin IS NOT NULL")
@@ -361,11 +367,15 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
             }
         }
 
-        for (pin, name, _card, _priv) in users {
-            if !pin_to_id.contains_key(&pin) {
+        for (pin, name, _card, _priv) in &users {
+            if !pin_to_id.contains_key(pin) {
                 // موظف على الجهاز غير مسجّل محلياً → أضفه تمهيدياً
                 // (بلا اسم على الجهاز؟ نستخدم الرقم الوظيفي كاسم ظاهر)
-                let display = if name.trim().is_empty() { pin.clone() } else { name };
+                let display = if name.trim().is_empty() {
+                    pin.clone()
+                } else {
+                    name.clone()
+                };
                 conn.execute(
                     "INSERT OR IGNORE INTO employees(pin,name,active,created_at,updated_at)
                      VALUES(?1,?2,1,?3,?3)",
@@ -376,7 +386,8 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
             }
         }
         // حدّث خريطة الربط بعد الإضافات
-        {
+        if added_users > 0 {
+            pin_to_id.clear();
             let mut st = conn
                 .prepare("SELECT id, pin FROM employees WHERE pin IS NOT NULL")
                 .map_err(|e| e.to_string())?;
@@ -388,9 +399,17 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
             }
         }
 
-        for (pin, dt, punch_type, wc, raw_status) in punches {
-            let emp_id = pin_to_id.get(&pin).copied();
-            let r = conn.execute(
+        db::set_setting(&conn, "last_sync_at", &now).map_err(|e| e.to_string())?;
+    }
+
+    // المرحلة الثانية: إدراج البصمات على دفعات (معاملة واحدة لكل دفعة) مع
+    // تحرير القفل بينها — فتبقى الصفحات مستجيبة أثناء سحب آلاف السجلات
+    for chunk in punches.chunks(400) {
+        let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for (pin, dt, punch_type, wc, raw_status) in chunk {
+            let emp_id = pin_to_id.get(pin).copied();
+            let r = tx.execute(
                 "INSERT INTO punches(employee_id,pin,device_time,punch_type,work_code,raw_status,synced_at)
                  VALUES(?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(pin,device_time) DO NOTHING",
@@ -400,8 +419,7 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
                 synced_punches += n;
             }
         }
-
-        db::set_setting(&conn, "last_sync_at", &now).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
 
     // إعادة احتساب أيام الحضور لآخر 60 يوماً (سريعة وكفيلة)
@@ -443,6 +461,47 @@ pub fn push_user_to_device(
     backend.add_user(&pin, &name).map_err(|e| e.to_string())?;
     backend.close();
     Ok(format!("أُرسل الاسم إلى الجهاز للرقم {pin}"))
+}
+
+/// حركات موظف واحد (دخول/خروج/استراحة/إضافي…) مع ترشيح بفترة — لشاشة عرض الموظف.
+#[tauri::command]
+pub fn employee_punches(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    from_date: Option<String>,
+    to_date: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<Value>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let limit = limit.unwrap_or(1000).clamp(1, 5000);
+    let from = from_date.unwrap_or_default();
+    // to_date كتاريخ نهاية شامل ليومه الكامل (مقارنة نصية على ISO)
+    let to_bound = {
+        let t = to_date.unwrap_or_default();
+        if t.is_empty() {
+            String::new()
+        } else {
+            format!("{t}T99:99:99")
+        }
+    };
+    let mut st = conn
+        .prepare(
+            "SELECT device_time, punch_type, work_code, raw_status FROM punches
+             WHERE employee_id=?1 AND device_time >= ?2 AND device_time < ?3
+             ORDER BY device_time DESC LIMIT ?4",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map(rusqlite::params![employee_id, from, to_bound, limit], |r| {
+            Ok(json!({
+                "device_time": r.get::<_, String>(0)?,
+                "punch_type": r.get::<_, i64>(1)?,
+                "work_code": r.get::<_, i64>(2)?,
+                "raw_status": r.get::<_, i64>(3)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 /// يقرأ ساعة الجهاز ويقارنها بمنطقة Asia/Jerusalem المحددة.
@@ -542,6 +601,7 @@ fn recompute_range(
                         id: r.get(0)?,
                         pin: r.get(1)?,
                         name: r.get(2)?,
+                        name_en: String::new(),
                         job_title: r.get(3)?,
                         phone: r.get(4)?,
                         daily_hours: r.get(5)?,
@@ -735,6 +795,7 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
                 id: r.get(0)?,
                 pin: r.get(1)?,
                 name: r.get(2)?,
+                name_en: String::new(),
                 job_title: r.get(3)?,
                 phone: r.get(4)?,
                 daily_hours: r.get(5)?,

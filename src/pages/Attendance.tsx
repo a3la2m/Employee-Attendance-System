@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getMonthDays, recomputeDays, getDailyReport, syncDevice } from "../lib/api";
+import { getMonthDays, recomputeDays, getDailyReport, syncDevice, listEmployees } from "../lib/api";
 import type { AttendanceDay, DailyRow } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
@@ -27,6 +27,15 @@ export default function Attendance({ toast }: { toast: Toast }) {
     `${period}-${String(now.getDate()).padStart(2, "0")}`,
   );
   const [daily, setDaily] = useState<DailyRow[]>([]);
+  const [empNames, setEmpNames] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    listEmployees()
+      .then((list) =>
+        setEmpNames(Object.fromEntries(list.map((e) => [e.id, e.name]))),
+      )
+      .catch(() => {});
+  }, []);
 
   const load = async () => {
     try {
@@ -222,9 +231,8 @@ export default function Attendance({ toast }: { toast: Toast }) {
                 const worked = rows.reduce((a, r) => a + r.worked_min, 0);
                 const late = rows.reduce((a, r) => a + r.late_min, 0);
                 const ot = rows.reduce((a, r) => a + r.overtime_min, 0);
-                const name = rows.length
-                  ? `موظف #${rows[0].employee_id}`
-                  : "";
+                const empId = rows[0]?.employee_id;
+                const name = empNames[empId] || `موظف #${empId}`;
                 return (
                   <tr key={i} className="hover:bg-slate-50">
                     <td className="td font-medium">{name}</td>
