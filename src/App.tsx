@@ -48,17 +48,28 @@ export default function App() {
 
   useEffect(() => {
     // مزامنة تلقائية تُبلّغ من الخلفية
-    const un1 = listen<{ new_punches?: number; ok: boolean; error?: string }>(
-      "sync",
-      (e) => {
-        if (e.payload.ok && (e.payload.new_punches ?? 0) > 0) {
-          toast(`تم سحب ${e.payload.new_punches} بصمة جديدة من الجهاز`, "ok");
-        } else if (!e.payload.ok && e.payload.error) {
-          // صامت عمداً: فقدان الاتصال شائع عند الإقلاع قبل الشبكة
-          console.warn("sync error:", e.payload.error);
-        }
-      },
-    );
+    const un1 = listen<{
+      new_punches?: number;
+      ok: boolean;
+      error?: string;
+      clock_diff_min?: number;
+      device_time?: string;
+    }>("sync", (e) => {
+      const skew = e.payload.clock_diff_min;
+      if (typeof skew === "number" && Math.abs(skew) > 5) {
+        toast(
+          Math.abs(skew) > 120
+            ? `⚠️ ساعة الجهاز خاطئة (تُظهر ${e.payload.device_time ?? "؟؟"}) — بصمات اليوم ستُسجل بتاريخ خاطئ. افتح «الجهاز» واضغط «تصحيح الوقت».`
+            : `⚠️ ساعة الجهاز تختلف بحوالي ${Math.round(Math.abs(skew))} دقيقة — صحّحها من صفحة «الجهاز».`,
+          "err",
+        );
+      } else if (e.payload.ok && (e.payload.new_punches ?? 0) > 0) {
+        toast(`تم سحب ${e.payload.new_punches} بصمة جديدة من الجهاز`, "ok");
+      } else if (!e.payload.ok && e.payload.error) {
+        // صامت عمداً: فقدان الاتصال شائع عند الإقلاع قبل الشبكة
+        console.warn("sync error:", e.payload.error);
+      }
+    });
     // مستخدم ويندوز جديد
     const un2 = listen<{ profile: string }>("new-windows-user", (e) => {
       setPending(e.payload.profile);

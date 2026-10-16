@@ -98,6 +98,24 @@ fn sync_once(app: &tauri::AppHandle) {
                     serde_json::json!({"new_punches": new_punches, "ok": true}),
                 );
             }
+            // تنبيه إن كانت ساعة الجهاز خاطئة — سبب شائع لعدم ظهور بصمة اليوم
+            if let Ok(tc) = commands::time_check_internal(&state) {
+                let diff = tc
+                    .get("diff_minutes")
+                    .and_then(|x| x.as_f64())
+                    .unwrap_or(0.0);
+                if diff.abs() > 5.0 {
+                    let _ = app.emit(
+                        "sync",
+                        serde_json::json!({
+                            "ok": true,
+                            "new_punches": 0,
+                            "clock_diff_min": diff,
+                            "device_time": tc.get("device_time"),
+                        }),
+                    );
+                }
+            }
         }
         Err(e) => {
             log::warn!("auto sync failed: {e}");

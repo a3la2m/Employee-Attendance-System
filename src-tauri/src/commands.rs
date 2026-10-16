@@ -448,6 +448,12 @@ pub fn push_user_to_device(
 /// يقرأ ساعة الجهاز ويقارنها بمنطقة Asia/Jerusalem المحددة.
 #[tauri::command]
 pub fn check_time_sync(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    time_check_internal(&state)
+}
+
+/// النواة المشتركة لفحص ساعة الجهاز — تستعمل أيضاً بعد المزامنة التلقائية
+/// للتنبيه إن كانت الساعة خاطئة (سبب شائع لاختفاء بصمة اليوم من التقارير).
+pub fn time_check_internal(state: &tauri::State<'_, AppState>) -> Result<Value, String> {
     let (ip, port, key, tz) = {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
         let s = settings_map(&conn);
