@@ -541,12 +541,11 @@ function PunchesModal({
   const [leaves, setLeaves] = useState<Leave[]>([]);
   const [busy, setBusy] = useState(false);
 
+  // جلب كامل بلا فلاتر — والترشيح يتم فورياً داخل الواجهة
   const load = async () => {
     setBusy(true);
     try {
-      setPunches(
-        await employeePunches(emp.id, from || undefined, to || undefined),
-      );
+      setPunches(await employeePunches(emp.id, undefined, undefined, 5000));
     } catch (e) {
       toast(String(e), "err");
     } finally {
@@ -562,7 +561,20 @@ function PunchesModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const shown = punches.filter((p) => !qtime || p.device_time.includes(qtime));
+  // ترشيح فوري: من/إلى تاريخ + بحث بالوقت
+  const shown = punches.filter(
+    (p) =>
+      (!from || p.device_time.slice(0, 10) >= from) &&
+      (!to || p.device_time.slice(0, 10) <= to) &&
+      (!qtime || p.device_time.includes(qtime)),
+  );
+  const filtersOn = Boolean(from || to || qtime);
+  const oldest = punches.length
+    ? punches[punches.length - 1].device_time.slice(0, 10)
+    : "—";
+  const newest = punches.length
+    ? punches[0].device_time.slice(0, 10)
+    : "—";
 
   return (
     <div
@@ -623,9 +635,9 @@ function PunchesModal({
             />
           </div>
           <button className="btn-primary" onClick={load} disabled={busy}>
-            {busy ? "جارٍ…" : "🔎 عرض"}
+            {busy ? "جارٍ…" : "🔄 تحديث"}
           </button>
-          {(from || to || qtime) && (
+          {filtersOn && (
             <button
               className="btn-ghost"
               onClick={() => {
@@ -639,8 +651,22 @@ function PunchesModal({
           )}
         </div>
 
+        {/* نطاق الحركات الفعلي المسجّل على النظام */}
         <div className="text-xs text-slate-500 mb-2">
-          عدد الحركات: {shown.length}
+          الإجمالي: {punches.length} حركة — الأقدم: {oldest} — الأحدث: {newest}
+        </div>
+
+        {/* كل الحركات خارج الفترة المحددة؟ سبب واضح + مسح فوري */}
+        {punches.length > 0 && shown.length === 0 && (
+          <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-800 mb-3 leading-relaxed">
+            ⚠️ لا حركات ضمن الفترة المحددة. كل حركات هذا الموظف مختومة بين{" "}
+            <b>{oldest}</b> و <b>{newest}</b> — وكانت ساعة الجهاز خاطئة وقت
+            تسجيلها فظهرت بتواريخ قديمة. اضغط «مسح الترشيح» لعرضها كلها.
+          </div>
+        )}
+
+        <div className="text-xs text-slate-500 mb-2">
+          المعروض: {shown.length} من {punches.length}
         </div>
 
         <div className="overflow-auto max-h-80 border border-slate-200 rounded-lg">

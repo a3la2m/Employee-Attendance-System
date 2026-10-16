@@ -54,11 +54,13 @@ export const employeePunches = (
   employeeId: number,
   fromDate?: string,
   toDate?: string,
+  limit?: number,
 ) =>
   invoke<PunchRow[]>("employee_punches", {
     employeeId,
     fromDate: fromDate || null,
     toDate: toDate || null,
+    limit: limit ?? null,
   });
 export const checkTimeSync = () => invoke<TimeCheck>("check_time_sync");
 export const fixDeviceTime = () =>

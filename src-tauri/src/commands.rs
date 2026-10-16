@@ -473,13 +473,25 @@ pub fn employee_punches(
     limit: Option<i64>,
 ) -> Result<Vec<Value>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    employee_punches_impl(&conn, employee_id, from_date, to_date, limit)
+}
+
+/// النواة القابلة للاختبار: ترشيح حركات موظف بفترة (فارغة = بلا حدّ).
+fn employee_punches_impl(
+    conn: &Connection,
+    employee_id: i64,
+    from_date: Option<String>,
+    to_date: Option<String>,
+    limit: Option<i64>,
+) -> Result<Vec<Value>, String> {
     let limit = limit.unwrap_or(1000).clamp(1, 5000);
     let from = from_date.unwrap_or_default();
-    // to_date كتاريخ نهاية شامل ليومه الكامل (مقارنة نصية على ISO)
+    // to_date كتاريخ نهاية شامل ليومه الكامل (مقارنة نصية على ISO)؛
+    // والفارغ = بلا حدّ أعلى (شرط '<' مع نص فارغ كان يُسقط كل الصفوف!)
     let to_bound = {
         let t = to_date.unwrap_or_default();
         if t.is_empty() {
-            String::new()
+            "9999-99-99T99:99:99".to_string()
         } else {
             format!("{t}T99:99:99")
         }
@@ -1119,4 +1131,59 @@ pub fn import_punches_csv(state: tauri::State<'_, AppState>, path: String) -> Re
         }
     }
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// اختبار رجوعي: حدّ «إلى تاريخ» فارغ يجب ألّا يُسقط الحركات.
+    /// (كان شرط device_time < '' ينفي كل الصفوف — سبب خلو شاشة العرض.)
+    #[test]
+    fn employee_punches_empty_bounds_returns_all() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_db(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO employees(id,pin,name,created_at,updated_at)
+             VALUES(9,'9','تسعة','x','x')",
+            [],
+        )
+        .unwrap();
+        for (t, pt) in [
+            ("2000-02-08T22:21:13", 0),
+            ("2000-05-01T08:00:00", 1),
+            ("2002-03-10T15:34:41", 0),
+        ] {
+            conn.execute(
+                "INSERT INTO punches(employee_id,pin,device_time,punch_type,work_code,raw_status,synced_at)
+                 VALUES(9,'9',?1,?2,0,0,'x')",
+                rusqlite::params![t, pt],
+            )
+            .unwrap();
+        }
+        // بلا فلاتر: كل الحركات
+        let all = employee_punches_impl(&conn, 9, None, None, None).unwrap();
+        assert_eq!(all.len(), 3, "بلا فلاتر يجب أن تظهر كل الحركات");
+        // فترة تشمل 2000-05 وحدها
+        let ranged = employee_punches_impl(
+            &conn,
+            9,
+            Some("2000-05-01".into()),
+            Some("2000-05-31".into()),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ranged.len(), 1);
+        assert_eq!(ranged[0]["device_time"], "2000-05-01T08:00:00");
+        // فترة بلا بيانات (مثل 2026 على جهاز بساعة خاطئة): فارغة
+        let y2026 = employee_punches_impl(
+            &conn,
+            9,
+            Some("2026-01-01".into()),
+            Some("2026-12-31".into()),
+            None,
+        )
+        .unwrap();
+        assert!(y2026.is_empty());
+    }
 }
