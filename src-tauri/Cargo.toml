@@ -1,6 +1,6 @@
 [package]
 name = "employee-attendance-system"
-version = "0.1.0"
+version = "0.2.0"
 description = "نظام إدارة الحضور والانصراف والرواتب"
 authors = ["you"]
 edition = "2021"
@@ -8,6 +8,11 @@ edition = "2021"
 [lib]
 name = "attendance_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# بدون custom-protocol يبني tauri التطبيق في وضع التطوير (devUrl = localhost:1420
+# ونافذة فارغة/خاطئة عند التشغيل) — نسخة الإصدار يجب أن تُبنى بهذه الخاصية.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -17,6 +22,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

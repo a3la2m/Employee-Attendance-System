@@ -189,6 +189,10 @@ impl DeviceBackend for ZkDllBackend {
         Err(anyhow!("use protocol backend for add_user"))
     }
 
+    fn delete_user(&mut self, _pin: &str) -> Result<()> {
+        Err(anyhow!("use protocol backend for delete_user"))
+    }
+
     fn close(&mut self) {
         if self.conn != 0 {
             if let Ok(dis) = unsafe { self.lib.get::<FnDisconnect>(b"Disconnect") } {

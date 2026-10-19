@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
@@ -9,6 +9,12 @@ import Device from "./pages/Device";
 import Settings from "./pages/Settings";
 import Toast from "./components/Toast";
 import { listen } from "@tauri-apps/api/event";
+import {
+  listNotifications,
+  markNotificationsSeen,
+  clearNotifications,
+} from "./lib/api";
+import type { Notification } from "./lib/types";
 
 type TabKey =
   | "dashboard"
@@ -39,12 +45,59 @@ const PAGES: Record<TabKey, ComponentType<{ toast: (m: string, t?: "ok" | "err")
   settings: Settings,
 };
 
+const KIND_ICON: Record<string, string> = {
+  late: "⏰",
+  missing_out: "🚪",
+  orphan_out: "↩️",
+};
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [toastMsg, setToastMsg] = useState<{ m: string; t: "ok" | "err" } | null>(null);
   const [pending, setPending] = useState<string | null>(null);
+  // سجل التنبيهات + عدّاد الجرس (كل التنبيهات محفوظة ويمكن العودة إليها)
+  const [notifs, setNotifs] = useState<Notification[]>([]);
+  const [bellOpen, setBellOpen] = useState(false);
+  const bellRef = useRef<HTMLDivElement>(null);
+  const unseen = notifs.filter((n) => !n.seen).length;
 
   const toast = (m: string, t: "ok" | "err" = "ok") => setToastMsg({ m, t });
+
+  const loadNotifs = () =>
+    listNotifications(200).then(setNotifs).catch(() => {});
+
+  useEffect(() => {
+    loadNotifs();
+    const iv = setInterval(loadNotifs, 30000); // تحديث العدّاد تلقائياً
+    return () => clearInterval(iv);
+  }, []);
+
+  // الضغط خارج لوحة الإشعارات يُغلقها
+  useEffect(() => {
+    if (!bellOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      if (!bellRef.current?.contains(e.target as Node)) setBellOpen(false);
+    };
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [bellOpen]);
+
+  // فتح الجرس: يعرض السجل ويصفّر العدّاد (تعليم الكل كمقروء)
+  const openBell = () => {
+    const next = !bellOpen;
+    setBellOpen(next);
+    if (next && unseen > 0) {
+      setNotifs((ns) => ns.map((n) => ({ ...n, seen: true })));
+      markNotificationsSeen().catch(() => {});
+    }
+  };
+
+  const wipeNotifs = () => {
+    if (!window.confirm("مسح كل التنبيهات المحفوظة نهائياً؟")) return;
+    setNotifs([]);
+    setBellOpen(false);
+    clearNotifications().catch(() => {});
+  };
 
   useEffect(() => {
     // مزامنة تلقائية تُبلّغ من الخلفية
@@ -54,9 +107,17 @@ export default function App() {
       error?: string;
       clock_diff_min?: number;
       device_time?: string;
+      clock_fixed?: { set_to?: string; diff_min?: number };
     }>("sync", (e) => {
+      const fixed = e.payload.clock_fixed;
       const skew = e.payload.clock_diff_min;
-      if (typeof skew === "number" && Math.abs(skew) > 5) {
+      if (fixed) {
+        const hhmm = fixed.set_to ? fixed.set_to.slice(11, 16) : "—";
+        toast(
+          `✅ صُحّحت ساعة الجهاز تلقائياً إلى ${hhmm} (كانت تختلف بحوالي ${Math.round(Math.abs(fixed.diff_min ?? 0))} دقيقة)`,
+          "ok",
+        );
+      } else if (typeof skew === "number" && Math.abs(skew) > 5) {
         toast(
           Math.abs(skew) > 120
             ? `⚠️ ساعة الجهاز خاطئة (تُظهر ${e.payload.device_time ?? "؟؟"}) — بصمات اليوم ستُسجل بتاريخ خاطئ. افتح «الجهاز» واضغط «تصحيح الوقت».`
@@ -87,9 +148,95 @@ export default function App() {
     <div className="flex h-full">
       {/* الشريط الجانبي */}
       <aside className="w-60 shrink-0 bg-slate-900 text-slate-100 flex flex-col">
-        <div className="px-5 py-5 border-b border-slate-800">
-          <div className="text-lg font-extrabold">نظام الحضور</div>
-          <div className="text-xs text-slate-400 mt-0.5">والرواتب — بصمة K50</div>
+        <div ref={bellRef} className="px-5 py-5 border-b border-slate-800 relative">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <div className="text-lg font-extrabold">نظام الحضور</div>
+              <div className="text-xs text-slate-400 mt-0.5">والرواتب — بصمة K50</div>
+            </div>
+            {/* زر الإشعارات: سجل التنبيهات + عدّاد غير المقروء */}
+            <button
+              onClick={openBell}
+              title="التنبيهات (كل التنبيهات محفوظة)"
+              aria-label={`التنبيهات${unseen > 0 ? ` — ${unseen} غير مقروء` : ""}`}
+              aria-expanded={bellOpen}
+              className="relative shrink-0 w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 grid place-content-center text-base transition"
+            >
+              🔔
+              {unseen > 0 && (
+                <span className="absolute -top-1 -left-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-extrabold grid place-content-center">
+                  {unseen > 99 ? "99+" : unseen}
+                </span>
+              )}
+            </button>
+          </div>
+
+          {/* لوحة التنبيهات المنسدلة */}
+          {bellOpen && (
+            <div className="absolute top-full right-0 mt-2 w-[22rem] max-h-[28rem] flex flex-col bg-white text-slate-800 rounded-xl shadow-2xl border border-slate-200 z-50">
+              <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-100">
+                <div className="font-extrabold text-sm">
+                  🔔 التنبيهات
+                  <span className="text-slate-400 font-normal mr-1">
+                    ({notifs.length})
+                  </span>
+                </div>
+                <button
+                  className="text-slate-400 hover:text-slate-700 text-sm"
+                  onClick={() => setBellOpen(false)}
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="overflow-auto flex-1">
+                {notifs.length === 0 && (
+                  <div className="p-6 text-center text-sm text-slate-400">
+                    لا توجد تنبيهات بعد ✓
+                  </div>
+                )}
+                {notifs.map((n) => (
+                  <div
+                    key={n.id}
+                    className={`px-4 py-2.5 border-b border-slate-50 flex gap-3 ${
+                      n.seen ? "" : "bg-indigo-50"
+                    }`}
+                  >
+                    <span className="text-base mt-0.5">
+                      {KIND_ICON[n.kind] ?? "🔔"}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-xs font-extrabold leading-tight">
+                        {n.title}
+                      </div>
+                      <div className="text-[11px] text-slate-600 leading-snug mt-0.5">
+                        {n.body}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono mt-0.5">
+                        {n.day} · {n.created_at.slice(11, 16)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 text-xs">
+                <button
+                  className="text-emerald-600 hover:underline font-bold"
+                  onClick={() => {
+                    setNotifs((ns) => ns.map((n) => ({ ...n, seen: true })));
+                    markNotificationsSeen().catch(() => {});
+                  }}
+                >
+                  ✓ تحديد الكل كمقروء
+                </button>
+                <button
+                  className="text-rose-500 hover:underline font-bold"
+                  onClick={wipeNotifs}
+                >
+                  🗑 مسح الكل
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <nav className="flex-1 p-3 space-y-1">
           {NAV.map((n) => {
@@ -110,8 +257,20 @@ export default function App() {
             );
           })}
         </nav>
-        <div className="p-4 text-[11px] text-slate-500 border-t border-slate-800">
-          يظل يعمل في الخلفية كأيقونة في شريط إشعارات النظام
+        <div className="p-4 text-[11px] text-slate-500 border-t border-slate-800 space-y-1">
+          <div>يعمل في الخلفية كأيقونة في شريط إشعارات النظام</div>
+          <div className="text-slate-600 select-none">
+            © 2026{" "}
+            <a
+              href="https://ordoo.shop"
+              target="_blank"
+              rel="noreferrer"
+              className="text-sky-400 hover:underline"
+            >
+              ordoo.shop
+            </a>{" "}
+            — جميع الحقوق محفوظة
+          </div>
         </div>
       </aside>
 

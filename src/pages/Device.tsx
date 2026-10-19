@@ -6,6 +6,7 @@ import {
   fixDeviceTime,
   getSettings,
   saveSettingsBulk,
+  clockNote,
 } from "../lib/api";
 import type { DeviceInfo, TimeCheck, Settings } from "../lib/types";
 
@@ -37,7 +38,7 @@ export default function Device({ toast }: { toast: Toast }) {
     try {
       const r = await syncDevice();
       toast(
-        `سحب ناجح: ${r.device.records} سجل، ${r.new_punches} جديد — أُعيد حساب ${r.days_recomputed} يوم`,
+        `سحب ناجح: ${r.device.records} سجل، ${r.new_punches} جديد — أُعيد حساب ${r.days_recomputed} يوم${clockNote(r.clock)}`,
       );
       setInfo(r.device);
     } catch (e) {

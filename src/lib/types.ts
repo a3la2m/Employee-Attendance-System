@@ -20,6 +20,14 @@ export interface Employee {
   meal_enabled: boolean;
   /** استحقاق بدل المواصلات. */
   transport_enabled: boolean;
+  /** دفع العطلة الأسبوعية (الافتراضي نعم — تُلغى لموظف بعينه فتصبح عطلة بدون أجر). */
+  weekend_paid: boolean;
+  /** رصيد الإجازات السنوية (بالأيام) — يُخصم عند تسجيل إجازة سنوية. */
+  annual_leave_balance: number;
+  /** استحقاق الإجازة السنوية في السنة (أيام) — الافتراضي 14؛ يُضاف منه 1/12 شهرياً للرصيد. */
+  annual_leave_days: number;
+  /** آخر شهر احتُسب رصيد الإجازة (YYYY-MM) — للاحتساب من حيث توقف. */
+  leave_accrual_month: string | null;
 }
 
 export interface AttendanceDay {
@@ -34,7 +42,11 @@ export interface AttendanceDay {
   overtime_min: number;
   absent: boolean;
   leave_type: string | null;
-  status: string; // present | late | absent | leave
+  status: string; // present | late | absent | leave | holiday | weekend
+  /** هل يوم الإجازة هذا مدفوع — null لغير الإجازات. */
+  leave_paid?: boolean | null;
+  /** تعديل يدوي من المسؤول (لا تمسه إعادة الاحتساب). */
+  manual?: boolean;
 }
 
 export interface PayrollResult {
@@ -47,6 +59,19 @@ export interface PayrollResult {
   overtime_hours: number;
   base_pay: number;
   allowances: number;
+  /** بدل العطلة الأسبوعية = بدل اليوم (`weekend_allow` — افتراض 62) × أيام
+   * العطلة الأسبوعية المستحقة (يوم عطلة دون عمل وأسبوعه فيه دوام). */
+  weekend_pay: number;
+  /** عدد أيام الدوام المدفوعة في الفترة (رقم إعلامي). */
+  paid_workdays: number;
+  /** عدد أيام العطلة الأسبوعية المستحقة لبدل العطلة (5 لشهر بخمس جمع). */
+  weekend_days_paid: number;
+  /** أيام إجازة مدفوعة (تُحتسب ضمن بدل العطلة). */
+  paid_leave_days: number;
+  /** أيام إجازة غير مدفوعة ( بلا خصم — دفع بالساعات فقط). */
+  unpaid_leave_days: number;
+  /** أيام الإجازات الرسمية (الأعياد). */
+  holiday_days: number;
   late_deduction: number;
   absence_deduction: number;
   net_pay: number;
@@ -61,6 +86,50 @@ export interface DeviceInfo {
   users: number;
   fingerprints: number;
   records: number;
+}
+
+/// تنبيه محفوظ في سجل الإشعارات (زر الجرس).
+export interface Notification {
+  id: number;
+  /** late | missing_out | orphan_out */
+  kind: string;
+  employee_id: number | null;
+  title: string;
+  body: string;
+  /** التاريخ المرتبط بالحدث (YYYY-MM-DD). */
+  day: string;
+  created_at: string;
+  seen: boolean;
+}
+
+/// موظف حاضر الآن: آخر بصمة اليوم له بصمة دخول (زمن الجهاز المحلي).
+export interface PresentNowItem {
+  employee_id: number;
+  name: string;
+  pin: string;
+  /** وقت آخر دخول (ISO بزمن الجهاز المحلي). */
+  last_in: string;
+}
+
+/** شهر رواتب مؤرشف في payroll_runs. */
+export interface PayrollMonth {
+  period: string; // YYYY-MM
+  employees: number;
+  net_total: number;
+  generated_at: string;
+}
+
+/** راتب موظف في شهر مؤرشف (سجل تاريخي). */
+export interface EmployeePayrollRun {
+  period: string; // YYYY-MM
+  days_present: number;
+  total_worked_hours: number;
+  overtime_hours: number;
+  base_pay: number;
+  allowances: number;
+  weekend_pay: number;
+  net_pay: number;
+  generated_at: string;
 }
 
 export interface Dashboard {
@@ -85,6 +154,16 @@ export interface DailyRow {
   overtime_min: number;
   absent: boolean;
   status: string;
+  /** تعديل يدوي من المسؤول (لا تمسه إعادة الاحتساب). */
+  manual?: boolean;
+  /** نوع الإجازة (annual/sick) إن كان اليوم إجازة. */
+  leave_type?: string | null;
+  /** هل الإجازة مدفوعة — null لغير الإجازات. */
+  leave_paid?: boolean | null;
+  /** مُلغي خصم الاستراحة لهذا اليوم (زر في نافذة التعديل). */
+  no_break?: boolean;
+  /** مُزاع بدل الفطور لهذا اليوم (زر في نافذة التعديل). */
+  no_meal?: boolean;
 }
 
 export interface TimeCheck {
@@ -101,6 +180,19 @@ export interface SyncResult {
   new_punches: number;
   days_recomputed: number;
   last_sync_at: string;
+  /** نتيجة فحص/تصحيح ساعة الجهاز أثناء المزامنة */
+  clock?: ClockCheck;
+}
+
+export interface ClockCheck {
+  /** null = تعذّر الفحص */
+  in_sync: boolean | null;
+  diff_min?: number;
+  device_time?: string;
+  device_time_before?: string;
+  set_to?: string;
+  fixed?: boolean;
+  error?: string;
 }
 
 export interface Leave {
@@ -111,6 +203,15 @@ export interface Leave {
   to_date: string;
   leave_type: string;
   note: string;
+  /** هل الإجازة مدفوعة (تُحتسب ضمن بدل العطلة لكل يوم دوام). */
+  paid: boolean;
+}
+
+/** إجازة رسمية (عيد) — مدفوعة لكل الموظفين. */
+export interface Holiday {
+  id: number;
+  date: string; // YYYY-MM-DD
+  name: string;
 }
 
 export type Settings = Record<string, string>;
@@ -130,4 +231,42 @@ export interface BackupResult {
   db_backup: string;
   settings_json: string;
   storage_dir: string;
+}
+
+/** بيانات رسوم لوحة التحكم. */
+export interface DayStat {
+  date: string;
+  label: string;
+  present: number;
+  late: number;
+  absent: number;
+  leave: number;
+  /** إجازات رسمية (أعياد) في هذا اليوم. */
+  holiday: number;
+  hours: number;
+  weekend: boolean;
+}
+
+export interface MonthStat {
+  present: number;
+  late: number;
+  absent: number;
+  leave: number;
+  /** إجازات رسمية (أعياد) خلال الشهر. */
+  holiday: number;
+  /** أيام العطلة الأسبوعية خلال الشهر (سُجّلت تلقائياً). */
+  weekend: number;
+  workdays: number;
+  hours: number;
+}
+
+export interface TopStat {
+  name: string;
+  hours: number;
+}
+
+export interface DashboardCharts {
+  last7: DayStat[];
+  month: MonthStat;
+  top: TopStat[];
 }

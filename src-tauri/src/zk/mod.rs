@@ -23,6 +23,8 @@ pub trait DeviceBackend {
     fn get_time_iso(&mut self) -> anyhow::Result<String>;
     /// محاولة إضافة موظف إلى الجهاز (تعمل عبر DLL؛ عبر البروتوكول قد تُرفض).
     fn add_user(&mut self, pin: &str, name: &str) -> anyhow::Result<()>;
+    /// حذف مستخدم من الجهاز = تعطيله عن البصمات حسب رقم البصمة.
+    fn delete_user(&mut self, pin: &str) -> anyhow::Result<()>;
     fn close(&mut self);
 }
 

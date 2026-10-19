@@ -11,6 +11,7 @@
     "core:event:default",
     "notification:default",
     "autostart:default",
-    "dialog:default"
+    "dialog:default",
+    "opener:default"
   ]
 }

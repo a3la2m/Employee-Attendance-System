@@ -3,7 +3,7 @@
 use super::{DeviceBackend, DeviceInfo, RawPunch, RawUser};
 use anyhow::{anyhow, Context, Result};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use std::str;
 
@@ -23,6 +23,7 @@ const CMD_GET_FREE_SIZES: u16 = 50;
 const CMD_GET_TIME: u16 = 201;
 const CMD_SET_TIME: u16 = 202;
 const CMD_USER_WRQ: u16 = 8;
+const CMD_DELETE_USER: u16 = 18; // حذف مستخدم (pyzk: CMD_DELETE_USER)
 const CMD_USERTEMP_RRQ: u16 = 9;
 const CMD_ATTLOG_RRQ: u16 = 13;
 const _CMD_PREPARE_BUFFER: u16 = 1503;
@@ -313,7 +314,13 @@ impl ZkProtocol {
 
 impl DeviceBackend for ZkProtocol {
     fn connect(&mut self) -> Result<DeviceInfo> {
-        let stream = TcpStream::connect((self.ip.as_str(), self.port))
+        // مهلة اتصال قصيرة (4 ثوانٍ): جهاز مطفأ/خارج الشبكة لا يُعلّق فتح
+        // الشاشات (لوحة التحكم كانت تتجمّد دقيقتين بانتظار انتهاء TCP).
+        let addr = (self.ip.as_str(), self.port)
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| anyhow!("لا عنوان صالح لـ {}:{}", self.ip, self.port))?;
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(4))
             .with_context(|| format!("connect {}:{} failed", self.ip, self.port))?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(15)))?;
@@ -379,61 +386,7 @@ impl DeviceBackend for ZkProtocol {
             .map(|(pin, _, _, _)| (pin.clone(), pin.clone()))
             .collect();
 
-        let mut out = Vec::new();
-        let mut push = |pin: String, ts_v: u32, status: u8, punch: u8, wc: u32| {
-            out.push((pin, decode_time(ts_v), punch as i64, wc as i64, status as i64));
-        };
-        match recsize {
-            8 => {
-                for c in body.chunks_exact(8) {
-                    let uid = u16::from_le_bytes([c[0], c[1]]);
-                    let status = c[2];
-                    let ts = u32::from_le_bytes([c[3], c[4], c[5], c[6]]);
-                    let punch = c[7];
-                    let pin = uid_to_pin
-                        .get(&uid.to_string())
-                        .cloned()
-                        .unwrap_or_else(|| uid.to_string());
-                    push(pin, ts, status, punch, 0);
-                }
-            }
-            16 => {
-                for c in body.chunks_exact(16) {
-                    let uid = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                    let ts = u32::from_le_bytes([c[4], c[5], c[6], c[7]]);
-                    let status = c[8];
-                    let punch = c[9];
-                    let wc = u32::from_le_bytes([c[12], c[13], c[14], c[15]]);
-                    let pin = uid_to_pin
-                        .get(&uid.to_string())
-                        .cloned()
-                        .unwrap_or_else(|| uid.to_string());
-                    push(pin, ts, status, punch, wc);
-                }
-            }
-            // صيغة موسّعة (40 بايت كما رصدنا على K50 Pro):
-            // uid(u16)@0, pin str@2..26, ts(u32)@28, status@32, punch@33
-            sz if sz >= 32 => {
-                for c in body.chunks_exact(sz) {
-                    let uid = u16::from_le_bytes([c[0], c[1]]);
-                    let pin_str = bytes_to_str(&c[2..26]);
-                    let ts = u32::from_le_bytes([c[28], c[29], c[30], c[31]]);
-                    let status = *c.get(32).unwrap_or(&0);
-                    let punch = *c.get(33).unwrap_or(&0);
-                    let pin = if !pin_str.is_empty() {
-                        pin_str
-                    } else {
-                        uid_to_pin
-                            .get(&uid.to_string())
-                            .cloned()
-                            .unwrap_or_else(|| uid.to_string())
-                    };
-                    push(pin, ts, status, punch, 0);
-                }
-            }
-            _ => return Err(anyhow!("unsupported record size {recsize}")),
-        }
-        Ok(out)
+        decode_attlog(body, recsize, &uid_to_pin)
     }
 
     fn get_time_iso(&mut self) -> Result<String> {
@@ -491,6 +444,26 @@ impl DeviceBackend for ZkProtocol {
         Ok(())
     }
 
+    /// تعطيل مستخدم على الجهاز = حذف سجله (CMD_DELETE_USER، حزمة pyzk 'h'):
+    /// لا تملك أجهزة ZK خانة «موقوف» منفصلة — الحذف يوقف قبول بصمته وبطاقته
+    /// فوراً، وتبقى سجلات حضوره السابقة على الجهاز وملفه في التطبيق كما هو.
+    /// عند إعادة تفعيله لاحقاً يُعاد إرساله (بصماته تُسجَّل من جديد على الجهاز).
+    fn delete_user(&mut self, pin: &str) -> Result<()> {
+        let existing = self.pull_user_records().unwrap_or_default();
+        let uid = existing
+            .iter()
+            .find(|(_, p, ..)| p == pin)
+            .map(|(u, ..)| *u)
+            .ok_or_else(|| anyhow!("الرقم {pin} غير موجود على الجهاز"))?;
+        let (cmd, _) = self.command(CMD_DELETE_USER, &uid.to_le_bytes())?;
+        if cmd != CMD_ACK_OK {
+            return Err(anyhow!("delete_user rejected (uid={uid})"));
+        }
+        // refresh data — كما يفعل pyzk بعد كل كتابة
+        let _ = self.command(1013, &[]);
+        Ok(())
+    }
+
     fn close(&mut self) {
         let _ = self.command(CMD_EXIT, &[]);
         if let Some(s) = self.sock.take() {
@@ -499,9 +472,111 @@ impl DeviceBackend for ZkProtocol {
     }
 }
 
+/// فكّ سجلات الحضور الخام — دالة نقية تُختبر دون جهاز.
+///
+/// التخطيط 40 بايت **مُتحقَّق حيّاً على K50 Pro على 4247/4247 سجلاً بتواريخ سليمة**:
+/// uid(u16)@0، pin str@2..26، status@26، ts(u32 pyzk)@27..31، punch@31 (0=دخول، 1=خروج).
+///
+/// كانت الإزاحة القديمة (ts@28/status@32/punch@33) تُفسد كل الطوابع الزمنية:
+/// بصمة بطاقة 9999 عند 2026-10-16T14:28:26 كانت تُخزَّن كـ 2000-02-08T22:22:08
+/// فتُعرض كغياب رغم نجاح المزامنة.
+fn decode_attlog(
+    body: &[u8],
+    recsize: usize,
+    uid_to_pin: &std::collections::HashMap<String, String>,
+) -> Result<Vec<RawPunch>> {
+    let mut out = Vec::new();
+    let mut push = |pin: String, ts_v: u32, status: u8, punch: u8, wc: u32| {
+        out.push((pin, decode_time(ts_v), punch as i64, wc as i64, status as i64));
+    };
+    match recsize {
+        8 => {
+            for c in body.chunks_exact(8) {
+                let uid = u16::from_le_bytes([c[0], c[1]]);
+                let status = c[2];
+                let ts = u32::from_le_bytes([c[3], c[4], c[5], c[6]]);
+                let punch = c[7];
+                let pin = uid_to_pin
+                    .get(&uid.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| uid.to_string());
+                push(pin, ts, status, punch, 0);
+            }
+        }
+        16 => {
+            for c in body.chunks_exact(16) {
+                let uid = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                let ts = u32::from_le_bytes([c[4], c[5], c[6], c[7]]);
+                let status = c[8];
+                let punch = c[9];
+                let wc = u32::from_le_bytes([c[12], c[13], c[14], c[15]]);
+                let pin = uid_to_pin
+                    .get(&uid.to_string())
+                    .cloned()
+                    .unwrap_or_else(|| uid.to_string());
+                push(pin, ts, status, punch, wc);
+            }
+        }
+        sz if sz >= 32 => {
+            for c in body.chunks_exact(sz) {
+                let uid = u16::from_le_bytes([c[0], c[1]]);
+                let pin_str = bytes_to_str(&c[2..26]);
+                let status = *c.get(26).unwrap_or(&0);
+                let ts = u32::from_le_bytes([c[27], c[28], c[29], c[30]]);
+                let punch = *c.get(31).unwrap_or(&0);
+                let pin = if !pin_str.is_empty() {
+                    pin_str
+                } else {
+                    uid_to_pin
+                        .get(&uid.to_string())
+                        .cloned()
+                        .unwrap_or_else(|| uid.to_string())
+                };
+                push(pin, ts, status, punch, 0);
+            }
+        }
+        _ => return Err(anyhow!("unsupported record size {recsize}")),
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ترميز سجلات الحضور 40 بايت — يطابق رصد K50 Pro الحيّ (4247/4247 سجلاً):
+    /// status@26، ts(u32 pyzk)@27..31، punch@31. بصمة بطاقة 9999 عند
+    /// 2026-10-16T14:28:26 كانت تُقرأ خطأً كـ 2000-02-08T22:22:08 بالإزاحة 28.
+    #[test]
+    fn attlog_40b_decode_matches_live_k50() {
+        // سجل حقيقي من الجهاز: pin=9999، 2026-10-16 14:28:26، status=1، دخول
+        let mut c = vec![0u8; 40];
+        c[0..2].copy_from_slice(&4247u16.to_le_bytes());
+        c[2..6].copy_from_slice(b"9999");
+        c[26] = 1;
+        c[27..31].copy_from_slice(&861_114_506u32.to_le_bytes());
+        c[31] = 0;
+        // سجل ثانٍ: pin=9، 2026-10-16 11:16:25، status=1، خروج
+        let mut c2 = vec![0u8; 40];
+        c2[0..2].copy_from_slice(&4244u16.to_le_bytes());
+        c2[2..3].copy_from_slice(b"9");
+        c2[26] = 1;
+        c2[27..31].copy_from_slice(&861_102_985u32.to_le_bytes());
+        c2[31] = 1;
+        let mut body = c;
+        body.extend_from_slice(&c2);
+
+        let map = std::collections::HashMap::new();
+        let out = decode_attlog(&body, 40, &map).expect("40-byte records");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "9999");
+        assert_eq!(out[0].1, "2026-10-16T14:28:26");
+        assert_eq!(out[0].2, 0, "punch: دخول");
+        assert_eq!(out[0].4, 1, "status");
+        assert_eq!(out[1].0, "9");
+        assert_eq!(out[1].1, "2026-10-16T11:16:25");
+        assert_eq!(out[1].2, 1, "punch: خروج");
+    }
 
     /// checksum الإطار يجب أن يتطابق مع إعادة الحساب بعد تصفير الحقل —
     /// بالضبط التحقق الذي يجريه الجهاز (مُثبت تجريبياً 3/3 على K50 Pro).
@@ -531,6 +606,62 @@ mod tests {
     fn frame_magic_is_7d82() {
         assert_eq!(TOP1, 0x5050);
         assert_eq!(TOP2, 0x7D82);
+    }
+
+    /// أمر الحذف وبنية الحزمة كما في pyzk (pack('h', uid)):
+    /// القيمة 18 والبايتات little-endian لكل uid.
+    #[test]
+    fn delete_user_cmd_matches_pyzk() {
+        assert_eq!(CMD_DELETE_USER, 18);
+        assert_eq!(9u16.to_le_bytes(), [9, 0]);
+        assert_eq!(60000u16.to_le_bytes(), [0x60, 0xEA]);
+    }
+
+    /// فحص حيّ «آمن» لأمر الحذف: نرسله لـuid غير موجود (60000) ويجب ألّا يمسّ
+    /// أي بيانات — يثبت صحة رقم الأمر وقبول الجهاز للإطار فقط، مع مقارنات
+    /// (ساعة قبل/بعد + أمر مجهول 0x1337) لتحديد دلالة الرد.
+    /// ZK_IP=192.168.1.205 cargo test live_delete -- --ignored --nocapture
+    #[test]
+    #[ignore = "يحتاج جهاز بصمة على الشبكة"]
+    fn live_delete_smoke_nonexistent_uid() {
+        let ip = std::env::var("ZK_IP").unwrap_or_else(|_| "192.168.1.205".to_string());
+        let mut d = ZkProtocol::new(&ip, 4370, 0);
+        d.connect().expect("connect failed");
+        let t0 = d.get_time_iso().unwrap_or_default();
+        let before = d.pull_users().expect("users before").len();
+        let (c1, p1) = d
+            .command(CMD_DELETE_USER, &60000u16.to_le_bytes())
+            .unwrap_or((0, vec![]));
+        println!("delete(60000)     → cmd={c1} payload={p1:02x?}");
+        let (c2, p2) = d.command(0x1337, &[]).unwrap_or((0, vec![]));
+        println!("unknown(0x1337)   → cmd={c2} payload={p2:02x?}");
+        let (c3, p3) = d
+            .command(CMD_DELETE_USER, &60001u16.to_le_bytes())
+            .unwrap_or((0, vec![]));
+        println!("delete(60001) x2  → cmd={c3} payload={p3:02x?}");
+        let t1 = d.get_time_iso().unwrap_or_default();
+        let after = d.pull_users().expect("users after").len();
+        d.close();
+        println!("time: {t0} → {t1} (الجلسة سليمة بعد الأوامر)");
+        assert_eq!(before, after, "عدد المستخدمين يجب ألّا يتغيّر — uid غير موجود");
+        println!("users: {before} → {after} ✓");
+
+        // (ب) الدورة الكاملة بأمان: مستخدم مؤقت بلا بصمات ← يُضاف ← يُحذف ← يختفي
+        // (لا بصمات حقيقية تُفقد — لا يُمسّ أي موظف حقيقي)
+        let mut d2 = ZkProtocol::new(&ip, 4370, 0);
+        d2.connect().expect("connect 2");
+        d2.add_user("9998", "TESTDEL").expect("إضافة مستخدم مؤقت");
+        let n1 = d2.pull_users().expect("users after add").len();
+        let has1 = d2.pull_users().unwrap().iter().any(|(p, ..)| p == "9998");
+        println!("بعد الإضافة: {n1} مستخدمين (9998 موجود={has1})");
+        d2.delete_user("9998").expect("حذف المستخدم المؤقت");
+        let n2 = d2.pull_users().expect("users after delete").len();
+        let has2 = d2.pull_users().unwrap().iter().any(|(p, ..)| p == "9998");
+        d2.close();
+        println!("بعد الحذف: {n2} مستخدمين (9998 موجود={has2})");
+        assert!(has1 && !has2, "الدورة: إضافة ثم حذف ثم اختفاء ✓");
+        assert_eq!(n2, n1 - 1, "يننقص بعدد واحد تماماً");
+        println!("دورة الإضافة/الحذف الكاملة ✓");
     }
 
     /// اختبار حيّ ضد الجهاز الحقيقي — يُشغَّل يدوياً فقط (يتجاهله CI):

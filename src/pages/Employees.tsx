@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import Modal from "../components/Modal";
 import {
   listEmployees,
   upsertEmployee,
   deleteEmployee,
   getSettings,
   pushUserToDevice,
+  disableUserOnDevice,
   employeePunches,
   listLeaves,
+  addLeave,
+  deleteLeave,
 } from "../lib/api";
 import type { PunchRow } from "../lib/api";
 import { translitArabic } from "../lib/translit";
@@ -30,6 +34,10 @@ const EMPTY: Employee = {
   overtime_enabled: true,
   meal_enabled: true,
   transport_enabled: true,
+  weekend_paid: true,
+  annual_leave_balance: 0,
+  annual_leave_days: 14,
+  leave_accrual_month: null,
 };
 
 // نوع الحركة كما يسجلها الجهاز (0=دخول 1=خروج …)
@@ -52,6 +60,8 @@ export default function Employees({ toast }: { toast: Toast }) {
   const [viewEmp, setViewEmp] = useState<Employee | null>(null);
   // آخر قيمة لاتينية ولّدها التطبيق من الاسم العربي (لتعرف إن عدّلها المستخدم)
   const lastAutoEn = useRef("");
+  // هل لمس المستخدم حقل الاسم الإنجليزي يدوياً؟ (يتوقف التوليد التلقائي بعده)
+  const enTouched = useRef(false);
 
   const load = () =>
     listEmployees()
@@ -69,22 +79,32 @@ export default function Employees({ toast }: { toast: Toast }) {
 
   // فتح النافذة الداخلية للإضافة أو التعديل
   const openForm = (emp?: Employee) => {
-    lastAutoEn.current = emp ? translitArabic(emp.name) : "";
+    lastAutoEn.current = "";
+    enTouched.current = false;
     setForm(emp ? { ...emp } : { ...EMPTY });
   };
 
-  // كتابة الاسم العربي يولّد اقتراحاً لاتينياً ما لم يعدّله المستخدم يدوياً
+  // كتابة الاسم العربي: يولّد اقتراحاً لاتينياً فقط عند إضافة موظف جديد ما دام
+  // المستخدم لم يلمس الحقل الإنجليزي — لا يمسّ حقل موظف قائم إطلاقاً.
   const setName = (name: string) => {
     const auto = translitArabic(name);
-    setForm((f) =>
-      f && {
-        ...f,
-        name,
-        name_en:
-          !f.name_en || f.name_en === lastAutoEn.current ? auto : f.name_en,
-      },
-    );
+    setForm((f) => {
+      if (!f) return f;
+      const canAuto =
+        !f.id &&
+        !enTouched.current &&
+        (!f.name_en || f.name_en === lastAutoEn.current);
+      return { ...f, name, name_en: canAuto ? auto : f.name_en };
+    });
     lastAutoEn.current = auto;
+  };
+
+  // توليد يدوي صريح من زر 🔄 (يعمل للإضافة والتعديل معاً)
+  const genEn = () => {
+    if (!form) return;
+    const auto = translitArabic(form.name);
+    lastAutoEn.current = auto;
+    setForm({ ...form, name_en: auto });
   };
 
   // إرسال الاسم اللاتيني إلى الجهاز فعلياً (الجهاز لا يدعم العربية)
@@ -114,6 +134,7 @@ export default function Employees({ toast }: { toast: Toast }) {
       const devName =
         (form.name_en || "").trim() || translitArabic(form.name).trim();
       let pushed = false;
+      let deactivated = false;
       let pushErr = "";
       if (pin && devName && form.active) {
         try {
@@ -122,10 +143,22 @@ export default function Employees({ toast }: { toast: Toast }) {
         } catch (e2) {
           pushErr = String(e2);
         }
+      } else if (pin && !form.active) {
+        // إيقاف الموظف = حذفه من الجهاز أيضاً حتى لا يبقى يبصم عليه
+        try {
+          await disableUserOnDevice(pin);
+          deactivated = true;
+        } catch (e2) {
+          // «غير موجود» = كان معطّلاً أصلاً على الجهاز — ليس خطأ
+          if (String(e2).includes("غير موجود")) deactivated = true;
+          else pushErr = String(e2);
+        }
       }
       if (pushed) toast("حُفظ الموظف وأُرسل اسمه إلى الجهاز");
+      else if (deactivated)
+        toast("حُفظ الموظف وأُوقف على جهاز البصمة — لم يعد يقبل بصمته");
       else if (pushErr)
-        toast(`حُفظ الموظف — لكن تعذّر الإرسال إلى الجهاز: ${pushErr}`, "err");
+        toast(`حُفظ الموظف — لكن تعذّر تحديث الجهاز: ${pushErr}`, "err");
       else toast(form.id ? "تم تحديث الموظف" : "تمت إضافة الموظف");
       setForm(null);
       load();
@@ -200,17 +233,12 @@ export default function Employees({ toast }: { toast: Toast }) {
 
       {/* ===== النافذة الداخلية: إضافة/تعديل موظف ===== */}
       {form && (
-        <div
-          className="fixed inset-0 z-40 bg-slate-900/50 flex items-start justify-center p-4 overflow-y-auto"
-          onClick={() => setForm(null)}
+        <Modal
+          onClose={() => setForm(null)}
+          title={form.id ? "✏️ تعديل موظف" : "➕ إضافة موظف جديد"}
+          panelClass="max-w-2xl"
+          backdropClass="z-40"
         >
-          <div
-            className="card w-full max-w-2xl mt-10 bg-white shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="font-bold text-lg mb-4">
-              {form.id ? "✏️ تعديل موظف" : "➕ إضافة موظف جديد"}
-            </h2>
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
                 <label className="label">الاسم الكامل (عربي) *</label>
@@ -221,19 +249,31 @@ export default function Employees({ toast }: { toast: Toast }) {
                 />
               </div>
               <div>
-                <label className="label">الاسم بالإنجليزية (على الجهاز) 🔤</label>
+                <label className="label flex items-center justify-between">
+                  <span>الاسم بالإنجليزية (على الجهاز) 🔤</span>
+                  <button
+                    type="button"
+                    className="text-xs font-bold text-indigo-600 hover:underline"
+                    onClick={genEn}
+                    title="توليد الاسم الإنجليزي من الاسم العربي"
+                  >
+                    🔄 توليد من الاسم العربي
+                  </button>
+                </label>
                 <input
                   className="input text-left"
                   dir="ltr"
-                  placeholder="يُولَّد تلقائياً من الاسم العربي"
+                  placeholder="يُولَّد تلقائياً عند الإضافة — أو اضغط 🔄"
                   value={form.name_en}
-                  onChange={(e) =>
-                    setForm({ ...form, name_en: e.target.value })
-                  }
+                  onChange={(e) => {
+                    enTouched.current = true; // لا يتوقف التوليد التلقائي بعد هذا اللمس
+                    setForm({ ...form, name_en: e.target.value });
+                  }}
                 />
                 <div className="text-[11px] text-slate-500 mt-1 leading-relaxed">
                   شاشة البصمة لا تدعم العربية — يُرسل هذا الاسم إلى الجهاز عند
-                  الحفظ، ويمكنك تعديله يدوياً.
+                  الحفظ. التوليد التلقائي يجري عند إضافة موظف جديد فقط ولا يتغيّر
+                  بتعديل الاسم العربي لموظف موجود — استخدم زر 🔄 متى شئت.
                 </div>
               </div>
               <div>
@@ -337,6 +377,48 @@ export default function Employees({ toast }: { toast: Toast }) {
                   <span>مواصلات</span>
                 </div>
               </div>
+              <div>
+                <label className="label">رصيد الإجازات السنوية (أيام)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  className="input text-left"
+                  dir="ltr"
+                  title="يُخصم تلقائياً عند تسجيل إجازة سنوية ويعود عند حذفها"
+                  value={form.annual_leave_balance}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      annual_leave_balance: Number(e.target.value),
+                    })
+                  }
+                />
+              </div>
+              <div>
+                <label className="label">الاستحقاق السنوي (أيام/سنة)</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min={0}
+                  className="input text-left"
+                  dir="ltr"
+                  title="يُضاف منه 1/12 تلقائياً كل شهر مكتمل إلى الرصيد (الافتراضي 14)"
+                  value={form.annual_leave_days}
+                  onChange={(e) =>
+                    setForm({
+                      ...form,
+                      annual_leave_days: Number(e.target.value),
+                    })
+                  }
+                />
+                <div className="text-[11px] text-slate-500 mt-1 px-0.5">
+                  يُضاف شهرياً{" "}
+                  {(form.annual_leave_days / 12).toFixed(2)} يوماً تلقائياً
+                  {form.leave_accrual_month
+                    ? ` — آخر احتساب: ${form.leave_accrual_month}`
+                    : ""}
+                </div>
+              </div>
             </div>
 
             {/* مفاتيح التفعيل: العمل الإضافي + الاستثناء من كل بدل على حدة */}
@@ -380,6 +462,21 @@ export default function Employees({ toast }: { toast: Toast }) {
                   />
                   <span>بدل المواصلات</span>
                 </label>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={form.weekend_paid}
+                    onChange={(e) =>
+                      setForm({ ...form, weekend_paid: e.target.checked })
+                    }
+                  />
+                  <span>العطلة الأسبوعية مدفوعة</span>
+                  {!form.weekend_paid && (
+                    <span className="text-amber-600 text-xs">
+                      (عطلة بدون أجر له)
+                    </span>
+                  )}
+                </label>
               </div>
             </div>
 
@@ -421,8 +518,12 @@ export default function Employees({ toast }: { toast: Toast }) {
               <button
                 className="btn-ghost"
                 onClick={() => pushToDevice(form)}
-                disabled={busyPush}
-                title="يحدّث اسم الموظف على الجهاز ليدخل عند البصم"
+                disabled={busyPush || !form.active}
+                title={
+                  form.active
+                    ? "يحدّث اسم الموظف على الجهاز ليدخل عند البصم"
+                    : "الموظف موقوف — لن يُعاد إلى الجهاز قبل تفعيله"
+                }
               >
                 {busyPush ? "جارٍ الإرسال…" : "📤 إرسال الاسم إلى الجهاز"}
               </button>
@@ -433,8 +534,7 @@ export default function Employees({ toast }: { toast: Toast }) {
                 💾 حفظ
               </button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
 
       {/* الجدول */}
@@ -518,21 +618,43 @@ export default function Employees({ toast }: { toast: Toast }) {
 
       {/* نافذة عرض حركات الموظف */}
       {viewEmp && (
-        <PunchesModal emp={viewEmp} onClose={() => setViewEmp(null)} toast={toast} />
+        <PunchesModal
+          emp={viewEmp}
+          onClose={() => setViewEmp(null)}
+          toast={toast}
+          onChanged={load}
+        />
       )}
     </div>
   );
 }
+
+/** عناوين أنواع الإجازات بالعربية. */
+const LEAVE_LABELS: Record<string, string> = {
+  annual: "إجازة سنوية",
+  sick: "إجازة مرضية",
+};
+
+/** عدد أيام المدى [من، إلى] بما فيه اليومان (0 إن كان التاريخ غير صالح). */
+const dayCount = (a: string, b: string): number => {
+  const t1 = Date.parse(a);
+  const t2 = Date.parse(b);
+  if (Number.isNaN(t1) || Number.isNaN(t2)) return 0;
+  return Math.round((t2 - t1) / 86400000) + 1;
+};
 
 /** نافذة عرض كل حركات موظف (دخول/خروج/استراحة/إضافي) + إجازاته، مع بحث. */
 function PunchesModal({
   emp,
   onClose,
   toast,
+  onChanged,
 }: {
   emp: Employee;
   onClose: () => void;
   toast: Toast;
+  /** يُستدعى بعد تغيير الإجازات لتحديث قائمة الموظفين (الرصيد في الجدول). */
+  onChanged?: () => void;
 }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -540,6 +662,16 @@ function PunchesModal({
   const [punches, setPunches] = useState<PunchRow[]>([]);
   const [leaves, setLeaves] = useState<Leave[]>([]);
   const [busy, setBusy] = useState(false);
+
+  // رصيد الإجازات السنوية (يتحدث محلياً فورياً بعد تسجيل/حذف إجازة سنوية)
+  const [balance, setBalance] = useState(emp.annual_leave_balance);
+  // نموذج إجازة جديدة
+  const [lvType, setLvType] = useState("annual");
+  const [lvPaid, setLvPaid] = useState(true);
+  const [lvFrom, setLvFrom] = useState("");
+  const [lvTo, setLvTo] = useState("");
+  const [lvNote, setLvNote] = useState("");
+  const [lvBusy, setLvBusy] = useState(false);
 
   // جلب كامل بلا فلاتر — والترشيح يتم فورياً داخل الواجهة
   const load = async () => {
@@ -553,13 +685,65 @@ function PunchesModal({
     }
   };
 
-  useEffect(() => {
-    load();
+  const reloadLeaves = () =>
     listLeaves()
       .then((ls) => setLeaves(ls.filter((l) => l.employee_id === emp.id)))
       .catch(() => {});
+
+  useEffect(() => {
+    load();
+    reloadLeaves();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** تسجيل إجازة جديدة (السنوية تُخصم من الرصيد). */
+  const saveLeave = async () => {
+    if (!lvFrom || !lvTo) return toast("حدد تاريخ البداية والنهاية", "err");
+    const days = dayCount(lvFrom, lvTo);
+    if (days <= 0) return toast("تاريخ الانتهاء يجب أن يكون بعد البداية", "err");
+    setLvBusy(true);
+    try {
+      await addLeave(emp.id, lvFrom, lvTo, lvType, lvPaid, lvNote);
+      if (lvType === "annual") setBalance((b) => b - days);
+      toast(
+        `سُجّلت ${LEAVE_LABELS[lvType] ?? "الإجازة"}: ${days} يوم ${
+          lvPaid ? "(مدفوعة)" : "(غير مدفوعة)"
+        }`,
+      );
+      setLvFrom("");
+      setLvTo("");
+      setLvNote("");
+      reloadLeaves();
+      onChanged?.();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setLvBusy(false);
+    }
+  };
+
+  /** حذف إجازة — تعود أيامها إلى الرصيد إن كانت سنوية. */
+  const removeLeave = async (l: Leave) => {
+    const label = LEAVE_LABELS[l.leave_type] ?? l.leave_type;
+    const restore = l.leave_type === "annual";
+    if (
+      !window.confirm(
+        `حذف ${label} (${l.from_date} ← ${l.to_date})؟${
+          restore ? " تُستعاد أيامها إلى الرصيد." : ""
+        }`,
+      )
+    )
+      return;
+    try {
+      await deleteLeave(l.id);
+      if (restore) setBalance((b) => b + dayCount(l.from_date, l.to_date));
+      toast("حُذفت الإجازة");
+      reloadLeaves();
+      onChanged?.();
+    } catch (e) {
+      toast(String(e), "err");
+    }
+  };
 
   // ترشيح فوري: من/إلى تاريخ + بحث بالوقت
   const shown = punches.filter(
@@ -577,32 +761,25 @@ function PunchesModal({
     : "—";
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-slate-900/50 flex items-start justify-center p-4 overflow-y-auto"
-      onClick={onClose}
-    >
-      <div
-        className="card w-full max-w-3xl mt-8 bg-white shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-bold text-lg">
-            🧾 حركات الموظف: {emp.name}
-            {emp.name_en && (
-              <span className="text-slate-400 font-normal" dir="ltr">
-                {" "}
-                — {emp.name_en}
-              </span>
-            )}
-            <span className="text-sm text-slate-500 font-normal">
+    <Modal
+      onClose={onClose}
+      title={
+        <span>
+          🧾 حركات الموظف: {emp.name}
+          {emp.name_en && (
+            <span className="text-slate-400 font-normal" dir="ltr">
               {" "}
-              (رقم {emp.pin || "—"})
+              — {emp.name_en}
             </span>
-          </h2>
-          <button className="btn-ghost" onClick={onClose}>
-            ✕ إغلاق
-          </button>
-        </div>
+          )}
+          <span className="text-sm text-slate-500 font-normal">
+            {" "}
+            (رقم {emp.pin || "—"})
+          </span>
+        </span>
+      }
+      panelClass="max-w-3xl"
+    >
 
         {/* الترشيحات: من تاريخ، إلى تاريخ، بحث بالوقت */}
         <div className="flex flex-wrap gap-3 items-end p-3 bg-slate-50 rounded-lg border border-slate-200 mb-4">
@@ -691,7 +868,8 @@ function PunchesModal({
                 const [d, t] = p.device_time.split("T");
                 const label =
                   PUNCH_LABELS[p.punch_type] ?? `نوع ${p.punch_type}`;
-                const isIn = p.punch_type === 0;
+                // اتجاه الدخول: حضور/عودة من استراحة/دخول إضافي
+                const isIn = [0, 3, 4].includes(p.punch_type);
                 return (
                   <tr key={i} className="hover:bg-slate-50">
                     <td className="td font-mono">{d}</td>
@@ -717,8 +895,89 @@ function PunchesModal({
           </table>
         </div>
 
-        {/* الإجازات/المغادرات المسجلة */}
-        <h3 className="font-bold mt-5 mb-2">🌴 الإجازات المسجلة</h3>
+        {/* رصيد الإجازات السنوية + تسجيل إجازة جديدة */}
+        <div className="flex items-center justify-between mt-5 mb-2">
+          <h3 className="font-bold">🌴 الإجازات السنوية والمرضية</h3>
+          <span className="badge bg-sky-100 text-sky-700 text-xs">
+            الرصيد المتاح: {balance} يوم
+          </span>
+        </div>
+
+        <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2 text-sm mb-3">
+          <div className="grid sm:grid-cols-4 gap-2">
+            <div>
+              <label className="label">النوع</label>
+              <select
+                className="input"
+                value={lvType}
+                onChange={(e) => setLvType(e.target.value)}
+              >
+                <option value="annual">إجازة سنوية</option>
+                <option value="sick">إجازة مرضية</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">من تاريخ</label>
+              <input
+                type="date"
+                className="input"
+                value={lvFrom}
+                onChange={(e) => setLvFrom(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">إلى تاريخ</label>
+              <input
+                type="date"
+                className="input"
+                value={lvTo}
+                onChange={(e) => setLvTo(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">ملاحظة</label>
+              <input
+                className="input"
+                placeholder="اختياري"
+                value={lvNote}
+                onChange={(e) => setLvNote(e.target.value)}
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={lvPaid}
+              onChange={(e) => setLvPaid(e.target.checked)}
+            />
+            <span>مدفوعة — تُحتسب ضمن بدل العطلة كيوم دوام</span>
+            {!lvPaid && (
+              <span className="text-amber-600 text-xs">(بلا أجر)</span>
+            )}
+          </label>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs text-slate-500">
+              أيام الطلب: <b>{lvFrom && lvTo ? dayCount(lvFrom, lvTo) : "—"}</b>
+              {lvType === "annual" && lvFrom && lvTo && (
+                <>
+                  {" · "}
+                  {balance - dayCount(lvFrom, lvTo) < 0 ? (
+                    <span className="text-rose-600 font-bold">
+                      ⚠️ الرصيد غير كافٍ
+                    </span>
+                  ) : (
+                    <>يتبقّى بعد الخصم {balance - dayCount(lvFrom, lvTo)} يوم</>
+                  )}
+                </>
+              )}
+            </span>
+            <button className="btn-primary" onClick={saveLeave} disabled={lvBusy}>
+              ➕ تسجيل الإجازة
+            </button>
+          </div>
+        </div>
+
+        <h3 className="font-bold mb-2">📋 الإجازات المسجلة</h3>
         {leaves.length === 0 ? (
           <div className="text-sm text-slate-400">
             لا إجازات مسجلة لهذا الموظف.
@@ -730,18 +989,33 @@ function PunchesModal({
                 key={l.id}
                 className="flex gap-2 items-center p-2 bg-amber-50 rounded border border-amber-200"
               >
-                <span className="badge bg-amber-100 text-amber-700">
-                  {l.leave_type}
+                <span className="badge bg-sky-100 text-sky-700">
+                  {LEAVE_LABELS[l.leave_type] ?? l.leave_type}
                 </span>
                 <span className="font-mono">
-                  {l.from_date} ← {l.to_date}
+                  {l.from_date} ← {l.to_date} ({dayCount(l.from_date, l.to_date)} يوم)
+                </span>
+                <span
+                  className={`badge ${
+                    l.paid
+                      ? "bg-emerald-100 text-emerald-700"
+                      : "bg-rose-100 text-rose-700"
+                  }`}
+                >
+                  {l.paid ? "مدفوعة" : "غير مدفوعة"}
                 </span>
                 {l.note && <span className="text-slate-500">({l.note})</span>}
+                <button
+                  className="mr-auto text-rose-500 hover:text-rose-700"
+                  title="حذف الإجازة (تعود أيامها للرصيد إن كانت سنوية)"
+                  onClick={() => removeLeave(l)}
+                >
+                  🗑️
+                </button>
               </li>
             ))}
           </ul>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

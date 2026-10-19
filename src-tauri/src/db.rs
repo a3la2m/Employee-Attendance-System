@@ -43,6 +43,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_punches_emp_time ON punches(employee_id, device_time);
         CREATE INDEX IF NOT EXISTS idx_punches_pin_time ON punches(pin, device_time);
+        -- فهرس عام بالتاريخ (لـ present_now وتقارير اليوم — بدون عملية substr غير الفهرسة)
+        CREATE INDEX IF NOT EXISTS idx_punches_time ON punches(device_time);
 
         CREATE TABLE IF NOT EXISTS attendance_days (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,8 +59,11 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             absent        INTEGER NOT NULL DEFAULT 0,
             leave_type    TEXT,                   -- annual/sick/...
             status        TEXT NOT NULL DEFAULT 'present', -- present/absent/late/leave
+            no_break      INTEGER NOT NULL DEFAULT 0, -- إلغاء خصم الاستراحة لهذا اليوم
+            no_meal       INTEGER NOT NULL DEFAULT 0, -- إزالة بدل الفطور لهذا اليوم
             UNIQUE(employee_id, date)
         );
+        CREATE INDEX IF NOT EXISTS idx_attendance_days_date ON attendance_days(date);
 
         CREATE TABLE IF NOT EXISTS leaves (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,6 +72,13 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             to_date     TEXT NOT NULL,
             leave_type  TEXT NOT NULL DEFAULT 'annual',
             note        TEXT DEFAULT '',
+            created_at  TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS holidays (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            date        TEXT NOT NULL UNIQUE,   -- YYYY-MM-DD
+            name        TEXT NOT NULL DEFAULT '',
             created_at  TEXT NOT NULL
         );
 
@@ -85,6 +97,18 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             generated_at TEXT NOT NULL,
             UNIQUE(period, employee_id)
         );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind        TEXT NOT NULL,            -- late | missing_out | orphan_out
+            employee_id INTEGER,
+            title       TEXT NOT NULL,
+            body        TEXT NOT NULL,
+            day         TEXT NOT NULL,            -- YYYY-MM-DD التاريخ المرتبط بالحدث
+            created_at  TEXT NOT NULL,
+            seen        INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_notifications_seen ON notifications(seen);
         "#,
     )?;
 
@@ -94,6 +118,25 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     migrate_column(conn, "employees", "transport_enabled", "INTEGER NOT NULL DEFAULT 1")?;
     // الاسم اللاتيني للشاشة التي لا تدعم العربية (يُرسل إلى الجهاز)
     migrate_column(conn, "employees", "name_en", "TEXT NOT NULL DEFAULT ''")?;
+    // تعديل يدوي ليوم حضور (1 = مُثبَّت من المسؤول، تتجاهله إعادة الاحتساب)
+    migrate_column(conn, "attendance_days", "manual", "INTEGER NOT NULL DEFAULT 0")?;
+    // دفع العطلة الأسبوعية (1 = مدفوعة — تُلغى لموظف بعينه فتصبح بدون أجر)
+    migrate_column(conn, "employees", "weekend_paid", "INTEGER NOT NULL DEFAULT 1")?;
+    // أجر العطلة الأسبوعية في أرشيف الرواتب
+    migrate_column(conn, "payroll_runs", "weekend_pay", "REAL NOT NULL DEFAULT 0")?;
+    // هل الإجازة مدفوعة (1 = تُحتسب ضمن بدل العطلة لكل يوم دوام)
+    migrate_column(conn, "leaves", "paid", "INTEGER NOT NULL DEFAULT 1")?;
+    // رصيد الإجازات السنوية للموظف (بالأيام)
+    migrate_column(conn, "employees", "annual_leave_balance", "REAL NOT NULL DEFAULT 0")?;
+    // الاستحقاق السنوي للإجازات (أيام في السنة — الافتراضي 14، يُخصم شهرياً ÷12)
+    migrate_column(conn, "employees", "annual_leave_days", "REAL NOT NULL DEFAULT 14")?;
+    // آخر شهر (YYYY-MM) أُضيفت أرصدته تلقائياً — لتستأنف الإضافة من حيث توقفت
+    migrate_column(conn, "employees", "leave_accrual_month", "TEXT")?;
+    // حالة إجازة اليوم: 1 = مدفوعة، 0 = غير مدفوعة، NULL = ليس يوم إجازة
+    migrate_column(conn, "attendance_days", "leave_paid", "INTEGER")?;
+    // أزرار اليوم في شاشة الحضور: إلغاء خصم الاستراحة / إزالة بدل الفطور
+    migrate_column(conn, "attendance_days", "no_break", "INTEGER NOT NULL DEFAULT 0")?;
+    migrate_column(conn, "attendance_days", "no_meal", "INTEGER NOT NULL DEFAULT 0")?;
     Ok(())
 }
 
@@ -126,8 +169,11 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         ("overtime_after_hours", "8.5"),
         ("overtime_rate_mult", "1.5"),
         ("grace_late_min", "0"),
+        ("weekend_allow", "62.0"),
+        // طريقة احتساب بدل العطلة: weekly = مبلغ الأسبوع ÷ أيام السبت–الخميس
+        ("weekend_pay_mode", "weekly"),
         ("timezone", "Asia/Jerusalem"),
-        ("weekend_days", "4,5"),
+        ("weekend_days", "4"),
         ("work_start", "09:00"),
         ("work_end", "17:30"),
         ("company_name", "اسم الشركة"),
@@ -136,7 +182,18 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         ("device_port", "4370"),
         ("device_comm_key", "0"),
         ("auto_sync_min", "5"),
+        ("auto_fix_clock", "1"),
         ("last_sync_at", ""),
+        // إشعار تأخير الموظفين (خليا يعمل مرة واحدة يومياً عند الوقت المحدد)
+        ("late_notify_enabled", "1"),
+        ("late_notify_time", "09:00"),
+        ("late_notify_sent", ""),
+        // خصم الاستراحة القياسية (نصف ساعة) من أيام الدوام — زر «لا تخصم الاستراحة»
+        ("deduct_break", "1"),
+        // الإضافة التلقائية الشهرية لأرصدة الإجازات السنوية (الاستحقاق السنوي ÷ 12)
+        ("leave_accrual_enabled", "1"),
+        // آخر فحص لأرصدة الإجازات (YYYY-MM-DD — مرة واحدة يومياً كالتنبيهات)
+        ("leave_accrual_last_run", ""),
     ];
     for (k, v) in defaults {
         conn.execute(

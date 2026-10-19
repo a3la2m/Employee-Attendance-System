@@ -87,6 +87,142 @@ fn spawn_auto_sync(app: tauri::AppHandle) {
     });
 }
 
+/// خلفية: فحص التنبيهات كل دقيقة — تأخير الدوام (عند الوقت المحدد)، خروج
+/// مفقود، وخروج بلا دخول — تُحفظ كلها في سجل الإشعارات (زر الجرس في
+/// الشريط الجانبي) وتظهر كإشعارات سطح المكتب عند حدوثها.
+fn spawn_notifications(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            notify_tick(&app);
+        }
+    });
+}
+
+/// فحص واحد للتنبيهات (يُستدعى كل دقيقة).
+fn notify_tick(app: &tauri::AppHandle) {
+    use chrono::Timelike;
+    use tauri_plugin_notification::NotificationExt;
+    let state = app.state::<AppState>();
+    let today;
+    let fresh; // تنبيهات جديدة (خروج مفقود / خروج بلا دخول)
+    let lates; // المتأخرون اليوم (يُحفظون في السجل أيضاً)
+    {
+        let Ok(conn) = state.db.lock() else { return };
+        let Ok(s) = crate::db::all_settings(&conn) else { return };
+        let tz_name = s
+            .get("timezone")
+            .cloned()
+            .unwrap_or_else(|| "Asia/Jerusalem".into());
+        use chrono_tz::Tz;
+        let tz: Tz = tz_name.parse().unwrap_or(chrono_tz::Asia::Jerusalem);
+        let now = chrono::Utc::now().with_timezone(&tz).naive_local();
+        today = now.format("%Y-%m-%d").to_string();
+
+        // 1) الأحداث الناقصة → تُحفظ دائماً في السجل (بدون تكرار)
+        fresh = commands::detect_missing_events(&conn, &today);
+
+        // 2) تنبيه التأخير — مرة واحدة كل يوم عند الوقت المحدد، ويُحفظ في السجل
+        lates = if s
+            .get("late_notify_enabled")
+            .map(|v| v != "0")
+            .unwrap_or(true)
+        {
+            let time =
+                normalize_hm(&s.get("late_notify_time").cloned().unwrap_or_else(|| "09:00".into()));
+            let sent = s.get("late_notify_sent").cloned().unwrap_or_default();
+            if sent != today {
+                let now_min = now.hour() as i64 * 60 + now.minute() as i64;
+                let (th, tm) = {
+                    let mut it = time.split(':');
+                    let h: i64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(9);
+                    let m: i64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+                    (h, m)
+                };
+                if now_min >= th * 60 + tm {
+                    let l = commands::lates_today(&conn, &today);
+                    for (id, name, late, _) in &l {
+                        let body = format!("{name} — تأخير {late} دقيقة عن بداية الدوام ({today})");
+                        commands::insert_notification(
+                            &conn,
+                            "late",
+                            Some(*id),
+                            &format!("تأخير: {name}"),
+                            &body,
+                            &today,
+                        );
+                    }
+                    // نُثبّت الإرسال حتى لا يتكرر خلال اليوم
+                    let _ = crate::db::set_setting(&conn, "late_notify_sent", &today);
+                    l
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        // 4) الإضافة التلقائية لأرصدة الإجازات السنوية — مرة واحدة يومياً
+        //    (الاحتساب نفسه يستأنف من حيث توقف عبر leave_accrual_month،
+        //    فالتشغيل المتكرر آمن ولا يُضيف إلا ما لم يُحتسب).
+        if s.get("leave_accrual_last_run").cloned().unwrap_or_default() != today {
+            let _ = commands::accrue_leave_impl(&conn, now.date());
+        }
+    }
+
+    // 3) إشعارات سطح المكتب للتنبيهات الجديدة فقط
+    if !fresh.is_empty() {
+        let lines: String = fresh
+            .iter()
+            .take(8)
+            .map(|x| format!("• {x}\n"))
+            .collect();
+        let more = if fresh.len() > 8 {
+            format!("… و {} آخرين", fresh.len() - 8)
+        } else {
+            String::new()
+        };
+        let _ = app
+            .notification()
+            .builder()
+            .title("🔔 تنبيهات الحضور")
+            .body(format!("{lines}{more}").trim_end().to_string())
+            .show();
+    }
+    if !lates.is_empty() {
+        let mut body = String::new();
+        for (_, name, late, fin) in lates.iter().take(12) {
+            let t = fin
+                .split('T')
+                .nth(1)
+                .map(|x| x[..5.min(x.len())].to_string())
+                .filter(|x| !x.is_empty())
+                .unwrap_or_else(|| "—".into());
+            body.push_str(&format!("• {name} — تأخير {late} دقيقة (حضور {t})\n"));
+        }
+        if lates.len() > 12 {
+            body.push_str(&format!("… و {} آخرين", lates.len() - 12));
+        }
+        let _ = app
+            .notification()
+            .builder()
+            .title(format!("⏰ تأخير عن الدوام — {today}"))
+            .body(body.trim_end())
+            .show();
+    }
+}
+
+/// يطبّع قيمة زمنية إلى HH:MM (للمقارنة والعرض).
+fn normalize_hm(v: &str) -> String {
+    let mut it = v.trim().split(':');
+    let h: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(9);
+    let m: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    format!("{h:02}:{m:02}")
+}
+
 fn sync_once(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     match commands::sync_device_internal(&state) {
@@ -98,20 +234,30 @@ fn sync_once(app: &tauri::AppHandle) {
                     serde_json::json!({"new_punches": new_punches, "ok": true}),
                 );
             }
-            // تنبيه إن كانت ساعة الجهاز خاطئة — سبب شائع لعدم ظهور بصمة اليوم
-            if let Ok(tc) = commands::time_check_internal(&state) {
-                let diff = tc
-                    .get("diff_minutes")
-                    .and_then(|x| x.as_f64())
-                    .unwrap_or(0.0);
-                if diff.abs() > 5.0 {
+            // ساعة الجهاز: أبلغ بتصحيحها التلقائي أو بقاء خطئها — نتيجة الفحص
+            // تأتي مع المزامنة نفسها (بلا اتصال ثانٍ للفحص)
+            if let Some(c) = v.get("clock").and_then(|x| x.as_object()) {
+                if c.get("fixed").and_then(|x| x.as_bool()) == Some(true) {
+                    let _ = app.emit(
+                        "sync",
+                        serde_json::json!({
+                            "ok": true,
+                            "new_punches": 0,
+                            "clock_fixed": {
+                                "set_to": c.get("set_to"),
+                                "diff_min": c.get("diff_min"),
+                            },
+                        }),
+                    );
+                } else if c.get("in_sync").and_then(|x| x.as_bool()) == Some(false) {
+                    let diff = c.get("diff_min").and_then(|x| x.as_f64()).unwrap_or(0.0);
                     let _ = app.emit(
                         "sync",
                         serde_json::json!({
                             "ok": true,
                             "new_punches": 0,
                             "clock_diff_min": diff,
-                            "device_time": tc.get("device_time"),
+                            "device_time": c.get("device_time"),
                         }),
                     );
                 }
@@ -197,6 +343,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--background"]),
@@ -213,6 +360,12 @@ pub fn run() {
             let dir = storage::resolve_dir(&base);
             std::fs::create_dir_all(&dir)?;
             let conn = db::open(&dir.join(storage::MAIN_DB))?;
+            // تنظيف فوري: أيام «غياب» مستقبلية أُنشئت قبل الإصلاح (لا غياب لأيام
+            // لم تأتِ بعد) — لا يتوقّف على نجاح الاتصال بالجهاز.
+            let cleaned_future = commands::cleanup_future_absences(&conn);
+            if cleaned_future > 0 {
+                log::info!("cleaned {cleaned_future} future absence rows");
+            }
             app.manage(AppState {
                 db: Mutex::new(conn),
                 base,
@@ -235,6 +388,7 @@ pub fn run() {
             }
 
             spawn_auto_sync(app.handle().clone());
+            spawn_notifications(app.handle().clone());
             watch_new_windows_users(app.handle().clone());
             Ok(())
         })
@@ -252,6 +406,7 @@ pub fn run() {
             commands::device_info,
             commands::sync_device,
             commands::push_user_to_device,
+            commands::disable_user_on_device,
             commands::employee_punches,
             commands::check_time_sync,
             commands::fix_device_time,
@@ -260,14 +415,28 @@ pub fn run() {
             commands::get_payroll,
             commands::archive_payroll,
             commands::get_daily_report,
+            commands::set_day_manual,
+            commands::set_day_flags,
+            commands::dashboard_charts,
             commands::add_leave,
+            commands::delete_leave,
+            commands::accrue_leave_now,
             commands::list_leaves,
+            commands::holidays_list,
+            commands::holiday_add,
+            commands::holiday_delete,
             commands::dashboard,
             commands::set_company_logo,
             commands::read_logo_data_uri,
             commands::pair_punch_pins,
             commands::server_time,
             commands::import_punches_csv,
+            commands::list_notifications,
+            commands::mark_notifications_seen,
+            commands::clear_notifications,
+            commands::present_now,
+            commands::payroll_months,
+            commands::employee_payroll_history,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
