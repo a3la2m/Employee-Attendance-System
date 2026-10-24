@@ -1,6 +1,6 @@
 //! تحويل البصمات الخام إلى أيام حضور محسوبة (حضور/غياب/تأخير/انصراف مبكر/إضافي).
 use crate::models::{AttendanceDay, PayrollSettings};
-use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 
 /// يحوّل نص ISO إلى NaiveDateTime (يتجاهل/يحوّل المنطقة الزمنية للحظة).
 fn parse_dt(s: &str) -> Option<NaiveDateTime> {
@@ -77,17 +77,78 @@ pub fn compute_days_for_employee(
     to: NaiveDate,
     now: NaiveDateTime, // الوقت المحلي الحالي (للحكم على الدوام الجاري)
 ) -> Vec<AttendanceDay> {
-    // اجمع البصمات حسب التاريخ (بتقويم الجهاز المحلي) مع نوع كل واحدة.
+    // اجمع البصمات حسب «يوم الوردية» (لا تاريخ الساعة): في الوردية الليلية
+    // (نهاية الدوام ≤ بدايتها، مثل 20:00→04:00) تُضمّ بصمات ما بعد منتصف
+    // الليل وقبل ساعة بدء الدوام إلى وردية اليوم السابق، فلا تنشطر الوردية
+    // على يومين ولا يظهر «خروج بلا دخول» صباحاً.
+    let (sh0, sm0) = parse_hm(&s.work_start);
+    let (eh0, em0) = parse_hm(&s.work_end);
+    let overnight = (eh0, em0) <= (sh0, sm0);
     let mut day_map: std::collections::BTreeMap<NaiveDate, Vec<(NaiveDateTime, i64)>> =
         Default::default();
     for (t, pt) in punch_list {
         if let Some(dt) = parse_dt(t) {
-            day_map.entry(dt.date()).or_default().push((dt, *pt));
+            // في الوردية الليلية: البصمة الواقعة قبل بدء الدوام تنتمي لليوم السابق
+            let shift_day = if overnight && (dt.hour(), dt.minute()) < (sh0, sm0) {
+                dt.date() - chrono::Duration::days(1)
+            } else {
+                dt.date()
+            };
+            day_map.entry(shift_day).or_default().push((dt, *pt));
         }
     }
 
-    let (sh, sm) = parse_hm(&s.work_start);
-    let (eh, em) = parse_hm(&s.work_end);
+    // خياطة الجلسات العابرة لمنتصف الليل (وردية نهارية يعمل فيها الموظف
+    // ليلاً): خروجٌ مبكّر في اليوم التالي يكون أولى بصماته، والفارق عن
+    // دخولٍ ما زال مفتوحاً من اليوم السابق لا يتجاوز مهلة الدوام الجارٍ
+    // (14 ساعة) — عندها تُغلق جلسة اليوم السابق وتُنسب إليه كاملة
+    // (مثال: دخول 22:00 وخروج 02:00 = أربع ساعات ليوم الدخول، لا يُشطر
+    // العمل على يومين ولا يظهر «خروج بلا دخول» صباحاً). ما جاوز المهلة
+    // يبقى بصمتين ناقصين ينتظر تصحّحاً (لا نختلق جلسة طويلة).
+    let keys: Vec<NaiveDate> = day_map.keys().copied().collect();
+    for w in keys.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if Some(b) != a.succ_opt() {
+            continue; // لا تُخاطَر جلسات بين يومين غير متتاليين
+        }
+        // هل انتهى اليوم (أ) بدخولٍ لم يُغلق؟
+        let mut open = None;
+        if let Some(ps) = day_map.get(&a) {
+            for (t, p) in ps {
+                if is_in_punch(*p) {
+                    if open.is_none() {
+                        open = Some(*t);
+                    }
+                } else {
+                    open = None;
+                }
+            }
+        }
+        let open_t = match open {
+            Some(t) => t,
+            None => continue,
+        };
+        // أولى بصمات اليوم (ب) خروجٌ لاحقٌ للدخول وضمن المهلة؟ انقلها
+        // لإغلاق جلسة (أ) — أي بصمة دخول في (ب) تُبطل الخياطة.
+        let moved = match day_map.get_mut(&b).and_then(|ps| {
+            let &(t1, p1) = ps.first()?;
+            if !is_in_punch(p1) && t1 > open_t && (t1 - open_t).num_minutes() <= OPEN_PUNCH_GRACE_MIN
+            {
+                Some(ps.remove(0))
+            } else {
+                None
+            }
+        }) {
+            Some(m) => m,
+            None => continue,
+        };
+        if let Some(ps) = day_map.get_mut(&a) {
+            ps.push(moved);
+        }
+    }
+
+    let (sh, sm) = (sh0, sm0);
+    let (eh, em) = (eh0, em0);
     let mut out = Vec::new();
     let mut d = from;
     while d <= to {
@@ -102,16 +163,16 @@ pub fn compute_days_for_employee(
             // الإجازة تتقدّم على البصمات: يوم مغطّى بإجازة يُعرض إجازةً حتى لو
             // سجّل الموظف بصمة (تحويل يوم حضور إلى إجازة من شاشة الحضور يعمل
             // مباشرة)، ولا يُعدّ غياباً إن لم يُسجّل شيئاً.
-            out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, Some(ty), "leave", Some(paid)));
+            out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, Some(ty), "leave", Some(paid), on_holiday));
         } else if punches.is_empty() {
             // لا بصمة: عطلة رسمية، ثم عطلة أسبوعية، ثم غياب
             if on_holiday {
-                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, None, "holiday", None));
+                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, None, "holiday", None, on_holiday));
             } else if weekend.contains(&d.weekday().num_days_from_monday()) {
                 // عطلة أسبوعية تلقائية (الجمعة عند weekend="4"): لا يُسجَّل غياباً
-                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, None, "weekend", None));
+                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, false, None, "weekend", None, on_holiday));
             } else {
-                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, true, None, "absent", None));
+                out.push(day_with(employee_id, d, None, None, 0, 0, 0, 0, true, None, "absent", None, on_holiday));
             }
         } else {
             // الازدواج: دخول يفتح فترة، خروج يغلقها؛ التكرار يُهمَل.
@@ -139,13 +200,21 @@ pub fn compute_days_for_employee(
                 .or_else(|| punches.iter().find(|(_, p)| is_in_punch(*p)).map(|(t, _)| *t));
             // آخر انصراف فعلي: نهاية آخر فترة مغلقة (الخروج المكرر يُهمَل)،
             // وإن لم تُغلق أي فترة (خروج وحده) نعرض آخر بصمة خروج.
-            let last = segments.last().map(|(_, b)| *b).or_else(|| {
-                punches
-                    .iter()
-                    .rev()
-                    .find(|(_, p)| !is_in_punch(*p))
-                    .map(|(t, _)| *t)
-            });
+            // ملاحظة: إذا بقي دخول مفتوح ولم توجد فترات مغلقة بعده، لا نُظهر آخر خروج قديم.
+            // أما إذا كانت هناك فترات مغلقة قبل الدخول المفتوح الحالي، نُبقي آخر خروج للفترة المغلقة الأخيرة.
+            let last = if open.is_some() && segments.is_empty() {
+                None
+            } else if open.is_some() && !segments.is_empty() {
+                segments.last().map(|(_, b)| *b)
+            } else {
+                segments.last().map(|(_, b)| *b).or_else(|| {
+                    punches
+                        .iter()
+                        .rev()
+                        .find(|(_, p)| !is_in_punch(*p))
+                        .map(|(t, _)| *t)
+                })
+            };
             let gross: i64 = segments
                 .iter()
                 .map(|(a, b)| (*b - *a).num_minutes().max(0))
@@ -171,9 +240,10 @@ pub fn compute_days_for_employee(
                 end_dt += chrono::Duration::days(1);
             }
 
-            // التأخير (معلومة فقط — لا حالة مستقلة)
+            // التأخير (معلومة فقط — لا حالة مستقلة). تُطرح مهلة التأخير
+            // (grace_late_min) قبل الحكم: التأخير ضمن المهلة = صفر.
             let late = first
-                .map(|f| (f - start_dt).num_minutes().max(0))
+                .map(|f| ((f - start_dt).num_minutes() - s.grace_late_min).max(0))
                 .unwrap_or(0);
 
             // الانصراف المبكر لا معنى له ليوم مفتوح (لا نعرف متى انصرف فعلاً)
@@ -183,16 +253,16 @@ pub fn compute_days_for_employee(
                 last.map(|l| (end_dt - l).num_minutes().max(0)).unwrap_or(0)
             };
 
-            // الإضافي: يبدأ بعد تجاوز الساعات الفعلية (بعد خصم الاستراحة إن
-            // كانت مفعّلة) لساعات الدوام الأساسية — العمل قد يكون في أي ساعة
-            // فلا حدّ لبداية اليوم.
-            let effective_break = if s.deduct_break && !has_break && !day_no_break {
-                s.break_min
-            } else {
-                0
-            };
-            let ot_threshold = ((s.daily_hours * 60.0) as i64 - effective_break).max(0);
-            let overtime = (worked - ot_threshold).max(0);
+            // الإضافي: العمل الفعلي مقابل ساعات الدوام الفعلية (الدوام ناقص
+            // مدة الاستراحة) — والعتبة ثابتة في الحالتين لا تتغير:
+            //   حضور 630 د باستراحة: (630−30) − 480 = 120 د (2 سا)
+            //   حضور 630 د بلا استراحة: 630 − 480 = 150 د (2.5 سا)
+            // الاستراحة راحة لا عمل؛ فإذا أُلغي خصمها ليوم صار وقت العمل
+            // الفعلي أكبر ودخلت النصف ساعة كاملة في الإضافي.
+            // العمل قد يكون في أي ساعة فلا حدّ لبداية اليوم.
+            // إذا كان هناك دخول مفتوح حالياً (لم يسجل خروج بعد) فلا نحسب عمل إضافي
+            let ot_threshold = ((s.daily_hours * 60.0) as i64 - s.break_min).max(0);
+            let overtime = if open.is_some() { 0i64 } else { (worked - ot_threshold).max(0) };
 
             // بلا دخول (خروج وحده) ← بصمة ناقصة مباشرة، فلا معنى لانتظار.
             // دخول بلا انصراف ← الموظف في دوامه ما دامت مهلته لم تنقضِ
@@ -222,6 +292,7 @@ pub fn compute_days_for_employee(
                 None,
                 status,
                 None,
+                on_holiday,
             ));
         }
         d = d.succ_opt().unwrap();
@@ -243,6 +314,7 @@ fn day_with(
     leave: Option<String>,
     status: &str,
     leave_paid: Option<bool>,
+    holiday: bool,
 ) -> AttendanceDay {
     AttendanceDay {
         id: 0,
@@ -259,6 +331,8 @@ fn day_with(
         status: status.to_string(),
         leave_paid,
         manual: false,
+        holiday,
+        holiday_work_choice: None,
     }
 }
 
@@ -387,7 +461,8 @@ mod tests {
     }
 
     /// زر «إلغاء خصم الاستراحة» ليوم بعينه: اليوم يعود لدقائقه الكاملة
-    /// (630 بدل 600)، والإضافي لا يتغيّر (عتبة الخصم ينزاح معه معاً).
+    /// (630 بدل 600)، وعتبة الإضافي تنخفض بنفس المدة (510 ← 480) فتدخل
+    /// نصف ساعة الاستراحة كاملة في الإضافي: 1.5 سا تصبح 2.5 سا.
     #[test]
     fn no_break_date_skips_break_deduction() {
         let punches: Vec<(String, i64)> = vec![
@@ -407,10 +482,41 @@ mod tests {
                 .unwrap();
         assert_eq!(normal.worked_min, 600, "بالاستراحة: 630 − 30");
         assert_eq!(free.worked_min, 630, "بلا استراحة: كامل");
-        assert_eq!(
-            free.overtime_min, normal.overtime_min,
-            "الإضافي محسوب من العتبة نفسها فلا يتأثر"
-        );
+        // العتبة ثابتة = الدوام − الاستراحة = 480 د في الحالتين:
+        // باستراحة: 600 − 480 = 120 د (2 سا)
+        // بلا استراحة: 630 − 480 = 150 د (2.5 سا)
+        assert_eq!(normal.overtime_min, 120, "إضافي عادي: 2 ساعة");
+        assert_eq!(free.overtime_min, 150, "بلا استراحة: 2.5 ساعة");
+    }
+
+    /// قواعد الإضافي مع إلغاء الاستراحة:8.5سا حضور بلا استراحة ← نصف
+    /// ساعة إضافي؛ 8سا حضور بلا استراحة ← بلا إضافي (عمل 8 ساعات فقط).
+    #[test]
+    fn no_break_overtime_follows_user_rules() {
+        let d = NaiveDate::from_ymd_opt(2026, 10, 19).unwrap();
+        // حضور 8.5 سا (08:00–16:30) بلا استراحة ← نصف ساعة إضافي
+        let p: Vec<(String, i64)> = vec![
+            ("2026-10-19T08:00:00".into(), 0),
+            ("2026-10-19T16:30:00".into(), 1),
+        ];
+        let day = compute_days_for_employee(1, "9", &p, &[], &[], &[4], &[d], &ps(), d, d, test_now())
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(day.worked_min, 510);
+        assert_eq!(day.overtime_min, 30, "8.5سا بلا استراحة: نصف ساعة إضافي");
+
+        // حضور 8 سا (08:00–16:00) بلا استراحة ← بلا إضافي
+        let p: Vec<(String, i64)> = vec![
+            ("2026-10-19T08:00:00".into(), 0),
+            ("2026-10-19T16:00:00".into(), 1),
+        ];
+        let day = compute_days_for_employee(1, "9", &p, &[], &[], &[4], &[d], &ps(), d, d, test_now())
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(day.worked_min, 480);
+        assert_eq!(day.overtime_min, 0, "8سا بلا استراحة: بلا إضافي");
     }
 
     /// الإجازة تتقدّم على البصمات: يوم له بصمات لكن تغطية إجازة ← إجازة
@@ -567,23 +673,31 @@ mod tests {
         assert_eq!(day.worked_min, 480, "الاستراحة المسجّلة تُفصل الفترتين فعلاً");
     }
 
-    /// الإضافي يبدأ بعد تجاوز الساعات الفعلية (بعد الاستراحة) لحد الدوام: 8.5 − 0.5 = 8 س.
+    /// الإضافي يبدأ بعد تجاوز العمل الفعلي لحد الدوام الفعلي (الدوام −
+    /// الاستراحة = 480 د): العمل 8.5 سا فعلياً = نصف ساعة إضافي.
     #[test]
     fn overtime_starts_after_net_daily_hours() {
-        // مناوبة 09:00–18:00 = 540 د ناقص 30 استراحة = 510 د فعلية → 30 د إضافي
+        // مناوبة 09:00–18:30 = 570 د ناقص 30 استراحة = 540 د فعلية → 60 د إضافي
         let d = day(&[
+            ("2026-10-16T09:00:00", 0),
+            ("2026-10-16T18:30:00", 1),
+        ]);
+        assert_eq!(d.worked_min, 540);
+        assert_eq!(d.overtime_min, 60);
+        // مناوبة 09:00–18:00 = 540 د ناقص 30 = 510 د فعلية = 8.5 سا → 30 د إضافي
+        let d2 = day(&[
             ("2026-10-16T09:00:00", 0),
             ("2026-10-16T18:00:00", 1),
         ]);
-        assert_eq!(d.worked_min, 510);
-        assert_eq!(d.overtime_min, 30);
-        // مناوبة 08:00–16:30 = 510 د ناقص 30 = 480 د فعلية = حد الدوام تماماً → بلا إضافي
-        let d2 = day(&[
+        assert_eq!(d2.worked_min, 510);
+        assert_eq!(d2.overtime_min, 30);
+        // مناوبة 08:00–16:30 = 510 د ناقص 30 = 480 د فعلية = حد الدوام → بلا إضافي
+        let d3 = day(&[
             ("2026-10-16T08:00:00", 0),
             ("2026-10-16T16:30:00", 1),
         ]);
-        assert_eq!(d2.worked_min, 480);
-        assert_eq!(d2.overtime_min, 0);
+        assert_eq!(d3.worked_min, 480);
+        assert_eq!(d3.overtime_min, 0);
     }
 
     /// يوم بلا بصمة ضمن إجازة سنوية مدفوعة → حالة "leave" ومقصود دفعها.
@@ -735,5 +849,220 @@ mod tests {
         ]);
         assert_eq!(d.late_min, 60);
         assert_eq!(d.status, "present");
+    }
+
+    // ----------------------------------------------- الوردية الليلية (عبر منتصف الليل)
+
+    /// إعدادات وردية ليلية 20:00→04:00 (نهاية الدوام أصغر من بدايته).
+    fn ps_night() -> PayrollSettings {
+        PayrollSettings { work_start: "20:00".into(), work_end: "04:00".into(), ..ps() }
+    }
+
+    /// يحسب يوم وردية ليلية: النطاق من يومٍ واحد، والبصمات الممتدّة لليوم التالي.
+    fn night_shift(from: &str, to: &str, punches: &[(&str, i64)], now: &str) -> Vec<AttendanceDay> {
+        let list: Vec<(String, i64)> = punches
+            .iter()
+            .map(|(t, p)| (t.to_string(), *p))
+            .collect();
+        let f = NaiveDate::parse_from_str(from, "%Y-%m-%d").unwrap();
+        let t = NaiveDate::parse_from_str(to, "%Y-%m-%d").unwrap();
+        let n = NaiveDateTime::parse_from_str(now, "%Y-%m-%dT%H:%M:%S").unwrap();
+        compute_days_for_employee(1, "9", &list, &[], &[], &[4], &[], &ps_night(), f, t, n)
+    }
+
+    /// وردية ليلية كاملة: دخول 20:00 يوم 19 وخروج 04:00 يوم 20 تُحتسب **ليوم
+    /// الوردية واحد** (19) بـ 8 ساعات، ولا يظهر «خروج بلا دخول» في يوم 20.
+    #[test]
+    fn overnight_shift_spans_midnight_into_one_day() {
+        let days = night_shift(
+            "2026-10-19",
+            "2026-10-20",
+            &[
+                ("2026-10-19T20:00:00", 0),
+                ("2026-10-20T04:00:00", 1),
+            ],
+            "2026-10-20T12:00:00",
+        );
+        assert_eq!(days.len(), 2);
+        let shift = &days[0]; // يوم 19
+        assert_eq!(shift.status, "present");
+        assert_eq!(shift.first_in.as_deref(), Some("2026-10-19T20:00:00"));
+        assert_eq!(shift.last_out.as_deref(), Some("2026-10-20T04:00:00"));
+        assert_eq!(shift.worked_min, 450, "8 ساعات − استراحة 30 د");
+        assert_eq!(shift.late_min, 0, "دخل في وقت الوردية");
+        // يوم 20 لا يحمل البصمة الصباحية (نُسبت لليوم السابق) → لا خروج بلا دخول
+        assert_ne!(days[1].status, "incomplete", "لا خروج بلا دخول");
+        assert!(days[1].first_in.is_none());
+    }
+
+    /// وردية ليلية مفتوحة (دخل ولم يخرج): تبقى ليوم الوردية ويُحكم عليها بـ«قيد
+    /// العمل» ما دامت مهلتها لم تنقضِ، ولا ينشأ صف «خروج بلا دخول» في اليوم التالي.
+    #[test]
+    fn overnight_open_shift_stays_on_shift_day() {
+        let days = night_shift(
+            "2026-10-19",
+            "2026-10-20",
+            &[("2026-10-19T20:05:00", 0)],
+            "2026-10-19T23:00:00",
+        );
+        assert_eq!(days[0].status, "present", "دخول حديث بلا انصراف = قيد العمل");
+        assert_eq!(days[0].first_in.as_deref(), Some("2026-10-19T20:05:00"));
+        assert!(days[1].first_in.is_none(), "لا تُنسخ البصمة لليوم التالي");
+    }
+
+    /// الوردية النهارية لا تتأثر: بصمات ما بعد منتصف الليل تبقى في يومها.
+    #[test]
+    fn daytime_shift_keeps_calendar_dates() {
+        // إعدادات نهارية (افتراضية ps: 09:00→17:30)
+        let d = day(&[
+            ("2026-10-16T09:00:00", 0),
+            ("2026-10-16T17:30:00", 1),
+        ]);
+        assert_eq!(d.worked_min, 480);
+        assert_eq!(d.first_in.as_deref(), Some("2026-10-16T09:00:00"));
+    }
+
+    /// وردية ليلية ببصمة صباحية مفقودة: الدخول 20:00 والخروج 04:00 ليومين
+    /// متتاليين لا تختلط — كل وردية تُجمع وحدها.
+    #[test]
+    fn consecutive_overnight_shifts_do_not_mix() {
+        let days = night_shift(
+            "2026-10-19",
+            "2026-10-20",
+            &[
+                ("2026-10-19T20:00:00", 0),
+                ("2026-10-20T04:00:00", 1),
+                ("2026-10-20T20:00:00", 0),
+                ("2026-10-21T04:00:00", 1),
+            ],
+            "2026-10-21T12:00:00",
+        );
+        assert_eq!(days[0].worked_min, 450, "وردية 19");
+        assert_eq!(days[0].last_out.as_deref(), Some("2026-10-20T04:00:00"));
+        assert_eq!(days[1].worked_min, 450, "وردية 20");
+        assert_eq!(days[1].first_in.as_deref(), Some("2026-10-20T20:00:00"));
+        assert_eq!(days[1].last_out.as_deref(), Some("2026-10-21T04:00:00"));
+    }
+
+    /// وردية نهارية يعمل فيها الموظف ليلاً: دخول 22:00 وخروج 02:00 صباح الغد
+    /// تُحتسب جلسة واحدة **ليوم الدخول** (أربع ساعات − الاستراحة)، لا تُشطر
+    /// على يومين ولا يظهر «خروج بلا دخول» صباحاً.
+    #[test]
+    fn overnight_session_on_day_shift_keeps_one_day() {
+        let d = day(&[
+            ("2026-10-16T22:00:00", 0),
+            ("2026-10-17T02:00:00", 1),
+        ]);
+        assert_eq!(d.status, "present");
+        assert_eq!(d.first_in.as_deref(), Some("2026-10-16T22:00:00"));
+        assert_eq!(d.last_out.as_deref(), Some("2026-10-17T02:00:00"));
+        assert_eq!(d.worked_min, 210, "أربع ساعات − استراحة 30 د");
+        assert_eq!(d.overtime_min, 0);
+    }
+
+    /// الخياطة عبر يومين (تُحسب الجلسة على يوم الدخول ودوام اليوم التالي سليم):
+    /// جلسة ليل 22:00←02:00 ليوم 16، ودوام 06:00←16:30 كامل ليوم 17.
+    #[test]
+    fn overnight_stitch_leaves_next_day_intact() {
+        let list: Vec<(String, i64)> = [
+            ("2026-10-16T22:00:00", 0i64),
+            ("2026-10-17T02:00:00", 1),
+            ("2026-10-17T06:00:00", 0),
+            ("2026-10-17T16:30:00", 1),
+        ]
+        .iter()
+        .map(|(t, p)| (t.to_string(), *p))
+        .collect();
+        let from = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let days =
+            compute_days_for_employee(1, "9", &list, &[], &[], &[4], &[], &ps(), from, to, test_now());
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0].worked_min, 210, "جلسة الليل ليوم الدخول");
+        assert_eq!(days[0].last_out.as_deref(), Some("2026-10-17T02:00:00"));
+        assert_eq!(days[1].first_in.as_deref(), Some("2026-10-17T06:00:00"));
+        assert_eq!(days[1].last_out.as_deref(), Some("2026-10-17T16:30:00"));
+        assert_eq!(days[1].worked_min, 600, "دوام النهار سليم بعد نقل خروج الليل");
+    }
+
+    /// ما جاوز مهلة الدوام الجارٍ (14 سا) لا يُخاطَر: خروج الغد البعيد عن دخول
+    /// مفتوح يبقى بصمة ناقصة (لا نختلق جلسة طويلة).
+    #[test]
+    fn long_gap_out_punch_does_not_stitch() {
+        let d = day(&[
+            ("2026-10-16T22:00:00", 0),
+            ("2026-10-17T17:00:00", 1),
+        ]);
+        assert_eq!(d.status, "incomplete", "دخل 22:00 ولم يخرج — المهلة انقضت");
+        assert_eq!(d.last_out, None, "لا انصراف مختلق");
+        assert_eq!(d.worked_min, 0);
+    }
+
+    /// بصمة صباح الغد دخول (نسي الخروج أمس) لا تُخاطَر مع مفتوح الأمس:
+    /// يبقى كل يوم بحاله (لا جلسة 20+ ساعة).
+    #[test]
+    fn next_day_in_punch_does_not_stitch() {
+        let list: Vec<(String, i64)> = [
+            ("2026-10-16T22:00:00", 0i64),
+            ("2026-10-17T06:00:00", 0),
+            ("2026-10-17T16:30:00", 1),
+        ]
+        .iter()
+        .map(|(t, p)| (t.to_string(), *p))
+        .collect();
+        let from = NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let days =
+            compute_days_for_employee(1, "9", &list, &[], &[], &[4], &[], &ps(), from, to, test_now());
+        assert_eq!(days[0].status, "incomplete", "دخول بلا انصراف = بصمة ناقصة");
+        assert_eq!(days[0].last_out, None);
+        assert_eq!(days[1].worked_min, 600, "يوم الغد كاملاً");
+    }
+
+    #[test]
+    fn before_and_after_shift_counted() {
+        let s = PayrollSettings {
+            daily_hours: 8.5,
+            break_min: 30,
+            deduct_break: true,
+            hourly_rate: 10.0,
+            meal_allow: 0.0,
+            transport_allow: 0.0,
+            overtime_after_hours: 8.5,
+            overtime_rate_mult: 1.5,
+            grace_late_min: 0,
+            weekend_allow: 62.0,
+            weekend_pay_mode: "weekly".into(),
+            work_start: "06:00".into(),
+            work_end: "16:30".into(),
+        };
+        let d = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        // دخول قبل الوردية بساعتين، خروج بعد بساعتين
+        let punches = vec![
+            ("2026-10-20T04:00:00".to_string(), 0i64),
+            ("2026-10-20T18:00:00".to_string(), 1i64),
+        ];
+        let days = compute_days_for_employee(
+            1,
+            "1",
+            &punches,
+            &[],
+            &[],
+            &[4],
+            &[],
+            &s,
+            d,
+            d,
+            NaiveDateTime::parse_from_str("2026-10-20T20:00:00", "%Y-%m-%dT%H:%M:%S").unwrap(),
+        );
+        assert_eq!(days.len(), 1);
+        let day = &days[0];
+        assert!(day.first_in.is_some());
+        assert!(day.last_out.is_some());
+        // 14 ساعة عمل - 30 دقيقة استراحة = 810 دقيقة
+        assert_eq!(day.worked_min, 810);
+        // العمل الإضافي = 810 − 480 (الدوام − الاستراحة) = 330 د = 5.5 ساعات
+        assert_eq!(day.overtime_min, 330);
+        assert_eq!(day.status, "present");
     }
 }

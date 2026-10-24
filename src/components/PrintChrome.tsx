@@ -41,12 +41,11 @@ export function PrintHeader({
   );
 }
 
-/** تذييل كل المطبوعات: نص التذييل (من الإعدادات) + تاريخ الطباعة. */
-export function PrintFooter({ cfg, date }: { cfg: Settings; date?: string }) {
+/** تذييل كل المطبوعات: نص التذييل (من الإعدادات). */
+export function PrintFooter({ cfg }: { cfg: Settings; date?: string }) {
   return (
     <div className="mt-4 pt-3 border-t border-slate-300 text-center text-xs text-slate-600 whitespace-pre-line">
       <div>{footerText(cfg)}</div>
-      {date && <div className="mt-1 text-slate-400">تاريخ الطباعة: {date}</div>}
     </div>
   );
 }

@@ -55,6 +55,92 @@ pub fn payroll_settings(s: &HashMap<String, String>) -> PayrollSettings {
     }
 }
 
+/// صف وردية كما تُقرأ من قاعدة البيانات (الحقول المستخدمة في الاحتساب).
+struct ShiftRow {
+    work_start: String,
+    work_end: String,
+    daily_hours: f64,
+    break_min: i64,
+}
+
+fn read_shift_row(conn: &Connection, id: i64) -> Option<ShiftRow> {
+    conn.query_row(
+        "SELECT work_start,work_end,daily_hours,break_min FROM shifts WHERE id=?1",
+        [id],
+        |r| {
+            Ok(ShiftRow {
+                work_start: r.get(0)?,
+                work_end: r.get(1)?,
+                daily_hours: r.get(2)?,
+                break_min: r.get(3)?,
+            })
+        },
+    )
+    .ok()
+}
+
+/// إعدادات الاحتساب لموظف واحد: ورديته (أو الوردية الرئيسية) فوق الإعداد
+/// العام. الوردية هي مرجع ساعات الدوام والاستراحة (تضبط حساب دوام الموظف).
+fn employee_settings(conn: &Connection, base: &PayrollSettings, employee_id: i64) -> PayrollSettings {
+    let shift_id: Option<i64> = conn
+        .query_row("SELECT shift_id FROM employees WHERE id=?1", [employee_id], |r| {
+            r.get(0)
+        })
+        .ok()
+        .flatten();
+    shift_settings(conn, base, shift_id)
+}
+
+/// يعيد معرّف الوردية التي يعمل عليها الموظف: ورديته المسنَدة، وإلا الوردية
+/// الرئيسية (is_default=1)، وإلا أول وردية مفعّلة. None إن لم توجد أي وردية
+/// (حينها يبقى الإعداد العام هو المرجع).
+fn effective_shift_id(conn: &Connection, employee_shift: Option<i64>) -> Option<i64> {
+    if let Some(id) = employee_shift {
+        let exists: bool = conn
+            .query_row("SELECT COUNT(*) FROM shifts WHERE id=?1", [id], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if exists {
+            return Some(id);
+        }
+    }
+    conn.query_row(
+        "SELECT id FROM shifts WHERE is_default=1 ORDER BY id LIMIT 1",
+        [],
+        |r| r.get::<_, i64>(0),
+    )
+    .ok()
+    .or_else(|| {
+        conn.query_row(
+            "SELECT id FROM shifts WHERE active=1 ORDER BY id LIMIT 1",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .ok()
+    })
+}
+
+/// يطبّق وردية الموظف على إعدادات الأساس (الساعات/الاستراحة/الوقتين)، مع
+/// احترام التجاوزات الفردية (ساعات/استراحة الموظف إن كانت محدّدة > 0).
+pub fn shift_settings(
+    conn: &Connection,
+    base: &PayrollSettings,
+    employee_shift: Option<i64>,
+) -> PayrollSettings {
+    let mut s = base.clone();
+    if let Some(id) = effective_shift_id(conn, employee_shift) {
+        if let Some(sh) = read_shift_row(conn, id) {
+            s.work_start = sh.work_start;
+            s.work_end = sh.work_end;
+            s.daily_hours = sh.daily_hours;
+            s.break_min = sh.break_min;
+        }
+    }
+    s
+}
+
 /// تحقّق أن النص صيغة وقت HH:MM ويعيد (ساعة، دقيقة).
 fn parse_hhmm(s: &str) -> Option<(u32, u32)> {
     let mut it = s.trim().split(':');
@@ -196,6 +282,48 @@ pub fn backup_now(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     }))
 }
 
+/// ينقل (يُنسخ) ملفات القاعدة والإعدادات إلى مجلد يختاره المستخدم.
+/// يُرجع قائمة الملفات المنسوخة، ويطلب من الواجهة إعادة تشغيل التطبيق للتأكد من العمل بعد النقل.
+#[tauri::command]
+pub fn export_storage_files(state: tauri::State<'_, AppState>, target_dir: String) -> Result<Vec<String>, String> {
+    let t = PathBuf::from(target_dir.trim());
+    if t.as_os_str().is_empty() {
+        return Err("المسار فارغ".into());
+    }
+    if !t.exists() {
+        std::fs::create_dir_all(&t).map_err(|e| format!("تعذّر إنشاء المجلد: {}", e))?;
+    }
+    let base = &state.base;
+    let active = storage::resolve_dir(base);
+    let mut copied: Vec<String> = Vec::new();
+    // نسخ قاعدة البيانات النشطة
+    if let Ok(conn) = state.db.lock() {
+        if let Some(p) = conn.path() {
+            let src = PathBuf::from(p);
+            if src.exists() {
+                let dst = t.join(storage::MAIN_DB);
+                std::fs::copy(&src, &dst).map_err(|e| format!("تعذّر نسخ القاعدة: {}", e))?;
+                copied.push(dst.display().to_string());
+            }
+        }
+    }
+    // نسخ attendance-settings.json إن وُجد
+    let sjson_src = active.join(storage::SETTINGS_JSON);
+    if sjson_src.exists() {
+        let sjson_dst = t.join(storage::SETTINGS_JSON);
+        std::fs::copy(&sjson_src, &sjson_dst).map_err(|e| format!("تعذّر نسخ الإعدادات: {}", e))?;
+        copied.push(sjson_dst.display().to_string());
+    }
+    // نسخ storage-config.json إن وُجد
+    let cfg_src = storage::config_file(base);
+    if cfg_src.exists() {
+        let cfg_dst = t.join(storage::STORAGE_CONFIG);
+        std::fs::copy(&cfg_src, &cfg_dst).map_err(|e| format!("تعذّر نسخ التهيئة: {}", e))?;
+        copied.push(cfg_dst.display().to_string());
+    }
+    Ok(copied)
+}
+
 /// يستعيد الإعدادات من `attendance-settings.json` (يُدمج فوق الإعدادات الحالية).
 #[tauri::command]
 pub fn restore_settings(state: tauri::State<'_, AppState>, path: Option<String>) -> Result<usize, String> {
@@ -238,7 +366,7 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
             "SELECT id,pin,name,name_en,job_title,phone,daily_hours,break_min,hourly_rate,
                     meal_allow,transport_allow,active,
                     overtime_enabled,meal_enabled,transport_enabled,weekend_paid,annual_leave_balance,
-                    annual_leave_days,leave_accrual_month
+                    annual_leave_days,leave_accrual_month,shift_id,device_privilege
              FROM employees ORDER BY name",
         )
         .map_err(|e| e.to_string())?;
@@ -264,6 +392,8 @@ pub fn list_employees(state: tauri::State<'_, AppState>) -> Result<Vec<Employee>
                 annual_leave_balance: r.get(16)?,
                 annual_leave_days: r.get(17)?,
                 leave_accrual_month: r.get(18)?,
+                shift_id: r.get::<_, Option<i64>>(19).ok().flatten(),
+                device_privilege: r.get::<_, i64>(20).unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -279,8 +409,8 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
             "UPDATE employees SET pin=?1,name=?2,job_title=?3,phone=?4,daily_hours=?5,
              break_min=?6,hourly_rate=?7,meal_allow=?8,transport_allow=?9,active=?10,updated_at=?11,
              overtime_enabled=?12,meal_enabled=?13,transport_enabled=?14,name_en=?15,weekend_paid=?16,
-             annual_leave_balance=?17,annual_leave_days=?18
-             WHERE id=?19",
+             annual_leave_balance=?17,annual_leave_days=?18,shift_id=?19,device_privilege=?20
+             WHERE id=?21",
             rusqlite::params![
                 emp.pin,
                 emp.name,
@@ -300,17 +430,26 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
                 emp.weekend_paid as i64,
                 emp.annual_leave_balance,
                 emp.annual_leave_days,
+                emp.shift_id,
+                emp.device_privilege,
                 emp.id
             ],
         )
         .map_err(|e| e.to_string())?;
         Ok(emp.id)
     } else {
+        // موظف جديد بلا وردية → الوردية الرئيسية تلقائياً
+        let shift_id = emp.shift_id.or_else(|| {
+            conn.query_row("SELECT id FROM shifts WHERE is_default=1 ORDER BY id LIMIT 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .ok()
+        });
         conn.execute(
             "INSERT INTO employees(pin,name,name_en,job_title,phone,daily_hours,break_min,hourly_rate,
              meal_allow,transport_allow,active,overtime_enabled,meal_enabled,transport_enabled,
-             weekend_paid,annual_leave_balance,annual_leave_days,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+             weekend_paid,annual_leave_balance,annual_leave_days,shift_id,device_privilege,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             rusqlite::params![
                 emp.pin,
                 emp.name,
@@ -329,6 +468,8 @@ pub fn upsert_employee(state: tauri::State<'_, AppState>, emp: Employee) -> Resu
                 emp.weekend_paid as i64,
                 emp.annual_leave_balance,
                 emp.annual_leave_days,
+                shift_id,
+                emp.device_privilege,
                 now,
                 now
             ],
@@ -350,6 +491,229 @@ pub fn delete_employee(state: tauri::State<'_, AppState>, id: i64) -> Result<(),
     Ok(())
 }
 
+// ---------------------------------------------------------------- الورديات
+
+/// يسرد كل الورديات مع عدد الموظفين المسنَدين لكل وردية (رقم إعلامي).
+pub fn list_shifts_impl(conn: &Connection) -> Result<Vec<Shift>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id,s.name,s.work_start,s.work_end,s.daily_hours,s.break_min,
+                    s.is_default,s.active,
+                    (SELECT COUNT(*) FROM employees e WHERE e.shift_id=s.id)
+             FROM shifts s ORDER BY s.is_default DESC, s.active DESC, s.name",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Shift {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                work_start: r.get(2)?,
+                work_end: r.get(3)?,
+                daily_hours: r.get(4)?,
+                break_min: r.get(5)?,
+                is_default: r.get::<_, i64>(6)? != 0,
+                active: r.get::<_, i64>(7)? != 0,
+                employee_count: r.get(8)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+#[tauri::command]
+pub fn list_shifts(state: tauri::State<'_, AppState>) -> Result<Vec<Shift>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    list_shifts_impl(&conn)
+}
+
+/// ينشئ/يحدّث وردية. اسم الوردية إلزامي، والأوقات تُطبَّع إلى HH:MM،
+/// وتُتحقق صحّتها. لا يمكن تعطيل/حذف الوردية الرئيسية إن كانت الافتراضية.
+pub fn upsert_shift_impl(conn: &Connection, shift: Shift) -> Result<i64, String> {
+    let name = shift.name.trim().to_string();
+    if name.is_empty() {
+        return Err("اسم الوردية مطلوب".into());
+    }
+    if parse_hhmm(&shift.work_start).is_none() {
+        return Err("بداية الدوام غير صالحة (HH:MM)".into());
+    }
+    if parse_hhmm(&shift.work_end).is_none() {
+        return Err("نهاية الدوام غير صالحة (HH:MM)".into());
+    }
+    if shift.work_start.trim() == shift.work_end.trim() {
+        return Err("بداية الدوام ونهايته لا يتطابقان".into());
+    }
+    if shift.daily_hours <= 0.0 {
+        return Err("ساعات الدوام الأساسية يجب أن تكون أكبر من صفر".into());
+    }
+    if shift.break_min < 0 {
+        return Err("الاستراحة لا تكون سالبة".into());
+    }
+    let ws = normalize_time(&shift.work_start);
+    let we = normalize_time(&shift.work_end);
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    if shift.id > 0 {
+        conn.execute(
+            "UPDATE shifts SET name=?1,work_start=?2,work_end=?3,daily_hours=?4,break_min=?5,
+             active=?6,updated_at=?7 WHERE id=?8",
+            rusqlite::params![
+                name,
+                ws,
+                we,
+                shift.daily_hours,
+                shift.break_min,
+                shift.active as i64,
+                now,
+                shift.id
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        // لا بدّ من وردية رئيسية واحدة دائماً: إن كان هذا الافتراضية فلا تُعطَّل
+        if shift.is_default {
+            conn.execute("UPDATE shifts SET is_default=0 WHERE id<>?1", [shift.id])
+                .map_err(|e| e.to_string())?;
+            conn.execute("UPDATE shifts SET is_default=1 WHERE id=?1", [shift.id])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(shift.id)
+    } else {
+        // أول وردية تُنشأ؟ تصبح الرئيسية تلقائياً
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM shifts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let is_default = if shift.is_default || count == 0 { 1 } else { 0 };
+        conn.execute(
+            "INSERT INTO shifts(name,work_start,work_end,daily_hours,break_min,is_default,active,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,1,?7,?7)",
+            rusqlite::params![
+                name,
+                ws,
+                we,
+                shift.daily_hours,
+                shift.break_min,
+                is_default,
+                now
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        if is_default == 1 {
+            conn.execute("UPDATE shifts SET is_default=0 WHERE id<>?1", [id])
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(id)
+    }
+}
+
+#[tauri::command]
+pub fn upsert_shift(state: tauri::State<'_, AppState>, shift: Shift) -> Result<i64, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    upsert_shift_impl(&conn, shift)
+}
+
+/// يجعل الوردية الرئيسية (يرثها كل موظف غير مسنَد) وإلا يبقى الإعداد العام.
+pub fn set_default_shift_impl(conn: &Connection, id: i64) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shifts WHERE id=?1", [id], |r| r.get(0))
+        .unwrap_or(0);
+    if exists == 0 {
+        return Err("الوردية غير موجودة".into());
+    }
+    conn.execute("UPDATE shifts SET is_default=0", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute("UPDATE shifts SET is_default=1,active=1 WHERE id=?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_default_shift(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    set_default_shift_impl(&conn, id)
+}
+
+/// يحذف وردية. يُنزع إسناد كل موظف منها (يصبحون على الوردية الرئيسية).
+/// لا يمكن حذف آخر وردية في النظام.
+pub fn delete_shift_impl(conn: &Connection, id: i64) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shifts", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count <= 1 {
+        return Err("لا يمكن حذف آخر وردية في النظام".into());
+    }
+    conn.execute("UPDATE employees SET shift_id=NULL WHERE shift_id=?1", [id])
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM shifts WHERE id=?1", [id])
+        .map_err(|e| e.to_string())?;
+    // إن كانت الوردية المحذوفة هي الرئيسية: عيّن أقل وردية مفعّلة كرئيسية
+    let has_default: i64 = conn
+        .query_row("SELECT COUNT(*) FROM shifts WHERE is_default=1", [], |r| r.get(0))
+        .unwrap_or(0);
+    if has_default == 0 {
+        let _ = conn.execute(
+            "UPDATE shifts SET is_default=1 WHERE id=(SELECT id FROM shifts WHERE active=1 ORDER BY id LIMIT 1)",
+            [],
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_shift(state: tauri::State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    delete_shift_impl(&conn, id)
+}
+
+/// يُسنِد قائمة موظفين إلى وردية (إسناد جماعي). `shift_id=NULL` يعيدهم
+/// للوردية الرئيسية. يعيد عدد الموظفين الذين تغيّرت ورديتهم فعلاً.
+pub fn assign_employees_to_shift_impl(
+    conn: &Connection,
+    employee_ids: &[i64],
+    shift_id: Option<i64>,
+) -> Result<usize, String> {
+    if let Some(id) = shift_id {
+        let exists: i64 = conn
+            .query_row("SELECT COUNT(*) FROM shifts WHERE id=?1", [id], |r| r.get(0))
+            .unwrap_or(0);
+        if exists == 0 {
+            return Err("الوردية غير موجودة".into());
+        }
+    }
+    let mut changed = 0usize;
+    for eid in employee_ids {
+        let n = conn
+            .execute(
+                "UPDATE employees SET shift_id=?1 WHERE id=?2 AND IFNULL(shift_id,-1)<>IFNULL(?1,-1)",
+                rusqlite::params![shift_id, eid],
+            )
+            .map_err(|e| e.to_string())?;
+        changed += n;
+    }
+    Ok(changed)
+}
+
+#[tauri::command]
+pub fn assign_employees_to_shift(
+    state: tauri::State<'_, AppState>,
+    employee_ids: Vec<i64>,
+    shift_id: Option<i64>,
+) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    assign_employees_to_shift_impl(&conn, &employee_ids, shift_id)
+}
+
+/// يعيد احتساب الحضور لكل الموظفين في المدى — يُستخدم بعد تغيير وردية/إسناد.
+#[tauri::command]
+pub fn reassign_shift_recompute(
+    state: tauri::State<'_, AppState>,
+    from: String,
+    to: String,
+) -> Result<usize, String> {
+    let f = NaiveDate::parse_from_str(&from, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    let t = NaiveDate::parse_from_str(&to, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    recompute_range(&state, &f, &t)
+}
+
 // ---------------------------------------------------------------- الجهاز
 
 #[tauri::command]
@@ -368,7 +732,7 @@ pub fn device_info(state: tauri::State<'_, AppState>) -> Result<DeviceInfo, Stri
 
 /// سحب سجلات الحضور والموظفين من الجهاز، مزامنتها مع القاعدة، وإعادة احتساب الأيام.
 /// نسخة داخلية تعمل من أي مقبض (تُستخدم في الأوامر والمزامنة التلقائية).
-/// فحص ساعة الجهاز وتصحيحها تلقائياً إن انحرفت أكثر من 5 دقائق (بوّابة
+/// فحص ساعة الجهاز وتصحيحها تلقائياً إن انحرفت أكثر من دقيقتين (بوّابة
 /// الإعداد auto_fix_clock). تعمل عبر البروتوكول مباشرة لأن قراءة/ضبط
 /// الوقت غير متاحة في خلفية DLL. لا تُفشل المزامنة إن تعذّر الاتصال.
 fn clock_check_and_fix(ip: &str, port: u16, key: u32, tz: &str, auto_fix: bool) -> Value {
@@ -384,7 +748,7 @@ fn clock_check_and_fix(ip: &str, port: u16, key: u32, tz: &str, auto_fix: bool) 
         Err(e) => return json!({"in_sync": null, "error": e.to_string()}),
     };
     let (local_now, diff) = check_device_clock(&dev_t, tz);
-    if diff.abs() <= 5 {
+    if diff.abs() <= 2 {
         b.close();
         return json!({"in_sync": true, "diff_min": diff, "device_time": dev_t});
     }
@@ -445,7 +809,7 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
             }
         }
 
-        for (pin, name, _card, _priv) in &users {
+        for (pin, name, _card, pv) in &users {
             if !pin_to_id.contains_key(pin) {
                 // موظف على الجهاز غير مسجّل محلياً → أضفه تمهيدياً
                 // (بلا اسم على الجهاز؟ نستخدم الرقم الوظيفي كاسم ظاهر)
@@ -455,12 +819,20 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
                     name.clone()
                 };
                 conn.execute(
-                    "INSERT OR IGNORE INTO employees(pin,name,active,created_at,updated_at)
-                     VALUES(?1,?2,1,?3,?3)",
-                    rusqlite::params![pin, display, now],
+                    "INSERT OR IGNORE INTO employees(pin,name,active,device_privilege,created_at,updated_at)
+                     VALUES(?1,?2,1,?3,?4,?4)",
+                    rusqlite::params![pin, display, pv, now],
                 )
                 .map_err(|e| e.to_string())?;
                 added_users += 1;
+            } else if let Some(&emp_id) = pin_to_id.get(pin) {
+                // مزامنة صلاحية الجهاز ← البرنامج: الجهاز هو المرجع (ما يظهر
+                // على شاشة الموظفين هو ما عليه فعلياً على جهاز البصمة).
+                let _ = conn.execute(
+                    "UPDATE employees SET device_privilege=?1
+                     WHERE id=?2 AND device_privilege<>?1",
+                    rusqlite::params![pv, emp_id],
+                );
             }
         }
         // حدّث خريطة الربط بعد الإضافات
@@ -521,6 +893,56 @@ pub fn sync_device(state: tauri::State<'_, AppState>) -> Result<Value, String> {
 
 /// إرسال/تحديث اسم الموظف على جهاز البصمة حسب رقم البصمة (USER_WRQ).
 #[tauri::command]
+pub fn get_next_device_pin(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let (ip, port, key) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let s = settings_map(&conn);
+        (
+            setting(&s, "device_ip", "192.168.1.205"),
+            setting_i(&s, "device_port", 4370) as u16,
+            setting_i(&s, "device_comm_key", 0) as u32,
+        )
+    };
+    let mut backend = make_backend(&ip, port, key, false);
+    if let Err(_) = backend.connect() {
+        // fallback to local max
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut max_pin: i64 = 0;
+        let mut st = conn.prepare("SELECT pin FROM employees WHERE pin IS NOT NULL AND pin <> ''").map_err(|e| e.to_string())?;
+        if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+            for r in rows.flatten() {
+                if let Ok(n) = r.parse::<i64>() {
+                    if n > max_pin { max_pin = n; }
+                }
+            }
+        }
+        backend.close();
+        return Ok((max_pin + 1).to_string());
+    }
+    let users = backend.pull_users().map_err(|e| e.to_string())?;
+    backend.close();
+    let mut max_pin: i64 = 0;
+    for (pin, _name, _card, _priv) in &users {
+        if let Ok(n) = pin.parse::<i64>() {
+            if n > max_pin { max_pin = n; }
+        }
+    }
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare("SELECT pin FROM employees WHERE pin IS NOT NULL AND pin <> ''").map_err(|e| e.to_string())?;
+        let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        for r in rows {
+            if let Ok(n) = r.parse::<i64>() {
+                if n > max_pin { max_pin = n; }
+            }
+        }
+    }
+    Ok((max_pin + 1).to_string())
+}
+
+#[tauri::command]
 pub fn push_user_to_device(
     state: tauri::State<'_, AppState>,
     pin: String,
@@ -564,6 +986,39 @@ pub fn disable_user_on_device(
     backend.delete_user(&pin).map_err(|e| e.to_string())?;
     backend.close();
     Ok(format!("عُطّل الرقم {pin} على الجهاز — لم يعد يقبل البصمات"))
+}
+
+/// تغيير صلاحية موظف على جهاز البصمة: 0 = مستخدم عادي، 6 = مدير،
+/// 14 = أدمن كامل (سوبر أدمن). الكتابة تحافظ على الاسم والبطاقة والبصمات.
+#[tauri::command]
+pub fn set_device_privilege(
+    state: tauri::State<'_, AppState>,
+    pin: String,
+    privilege: i64,
+) -> Result<String, String> {
+    let (ip, port, key) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let s = settings_map(&conn);
+        (
+            setting(&s, "device_ip", "192.168.1.205"),
+            setting_i(&s, "device_port", 4370) as u16,
+            setting_i(&s, "device_comm_key", 0) as u32,
+        )
+    };
+    let mut backend = make_backend(&ip, port, key, false); // الكتابة عبر البروتوكول
+    backend.connect().map_err(|e| format!("تعذر الاتصال: {e}"))?;
+    backend
+        .set_user_privilege(&pin, privilege)
+        .map_err(|e| e.to_string())?;
+    backend.close();
+    Ok(format!(
+        "حُدِّثت صلاحية الرقم {pin} على الجهاز ({})",
+        match privilege {
+            14 => "أدمن كامل",
+            6 => "مدير",
+            _ => "مستخدم عادي",
+        }
+    ))
 }
 
 /// حركات موظف واحد (دخول/خروج/استراحة/إضافي…) مع ترشيح بفترة — لشاشة عرض الموظف.
@@ -687,7 +1142,8 @@ pub fn fix_device_time(state: tauri::State<'_, AppState>) -> Result<Value, Strin
 // ---------------------------------------------------------------- الحضور
 
 /// يعيد احتساب أيام الحضور لعدد أيام معيّن في الماضي.
-fn recompute_recent(state: &AppState, days: i64) -> Result<usize, String> {
+/// يعيد احتساب آخر `days` يوماً حتى اليوم (يُستدعى بعد المزامنة وعند الإقلاع).
+pub fn recompute_recent(state: &AppState, days: i64) -> Result<usize, String> {
     // تاريخ اليوم بالمنطقة الزمنية المحددة (لا UTC) حتى يشمل الاحتساب صف اليوم
     // حتى بعد منتصف الليل المحلي — مهم لتحوّل الدوام الجاري إلى «بصمة ناقصة».
     let today = {
@@ -696,6 +1152,180 @@ fn recompute_recent(state: &AppState, days: i64) -> Result<usize, String> {
     };
     let from = today - chrono::Duration::days(days);
     recompute_range(state, &from, &today)
+}
+
+/// يلغي الإجازة عن أي يوم **دوّم فيه الموظف فعلياً** (له بصمات) داخل المدى:
+/// - إجازة يوم واحد ← تُحذف، وإجازة متعددة الأيام ← تُشطر (يُستبعد اليوم منها).
+/// - السنوية **المدفوعة** يُعاد لها يوم في الرصيد (كان خُصم عند التسجيل).
+/// - يُحفظ تنبيهاً في الجرس يشرح ما حُصل (بلا تكرار لنفس اليوم).
+/// - الاستثناء: إجازة أنشأها المسؤول صراحةً ليوم له بصمات (keep_punches=1،
+///   من «تحويل اليوم إلى إجازة» في شاشة الحضور) فلا تُلغى تلقائياً.
+///
+/// يُستدعى داخل إعادة الاحتساب قبل قراءة الإجازات، فتُحتسب الأيام الملغاة حضوراً.
+fn resolve_work_on_leave(
+    conn: &Connection,
+    employee_id: i64,
+    name: &str,
+    punches: &[(String, i64)],
+    from: NaiveDate,
+    to: NaiveDate,
+) {
+    // تواريخ البصمات داخل المدى (المفتاح YYYY-MM-DD من الطابع الزمني)
+    let mut punch_dates: std::collections::BTreeSet<NaiveDate> = Default::default();
+    for (t, _) in punches {
+        if let Some(day) = t.get(0..10) {
+            if let Ok(d) = NaiveDate::parse_from_str(day, "%Y-%m-%d") {
+                punch_dates.insert(d);
+            }
+        }
+    }
+    if punch_dates.is_empty() {
+        return;
+    }
+
+    // حماية من أي حلقة لا نهائية: كل دورة تُزيل يوماً واحداً على الأكثر
+    let max_steps = 400usize;
+    for _ in 0..max_steps {
+        // اقرأ الإجازات غير المحميّة المتقاطعة مع المدى (حالة جديدة كل دورة)
+        let leaves: Vec<(i64, String, String, String, bool)> = {
+            let Ok(mut st) = conn.prepare(
+                "SELECT id,from_date,to_date,leave_type,paid FROM leaves
+                 WHERE employee_id=?1 AND to_date>=?2 AND from_date<=?3
+                   AND IFNULL(keep_punches,0)=0",
+            ) else {
+                return;
+            };
+            let rows = st.query_map(
+                rusqlite::params![employee_id, from.to_string(), to.to_string()],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, i64>(4)? != 0,
+                    ))
+                },
+            );
+            match rows {
+                Ok(rows) => rows.flatten().collect(),
+                Err(_) => return,
+            }
+        };
+
+        // أول يوم تعارض: بصمة داخل نطاق إجازة
+        let mut hit: Option<(i64, NaiveDate, NaiveDate, String, bool, NaiveDate)> = None;
+        'outer: for (lid, f, t, ty, paid) in &leaves {
+            let (Ok(lf), Ok(lt)) = (
+                NaiveDate::parse_from_str(f, "%Y-%m-%d"),
+                NaiveDate::parse_from_str(t, "%Y-%m-%d"),
+            ) else {
+                continue;
+            };
+            let start = lf.max(from);
+            let end = lt.min(to);
+            let mut d = start;
+            while d <= end {
+                if punch_dates.contains(&d) {
+                    hit = Some((*lid, lf, lt, ty.clone(), *paid, d));
+                    break 'outer;
+                }
+                d = match d.succ_opt() {
+                    Some(n) => n,
+                    None => break,
+                };
+            }
+        }
+        let Some((lid, lf, lt, ty, paid, d)) = hit else {
+            break; // لا مزيد من التعارضات
+        };
+
+        // استبعد اليوم من الإجازة: حذف ليوم واحد، أو شطر للمتعددة
+        let ds = d.format("%Y-%m-%d").to_string();
+        if lf == lt {
+            if conn.execute("DELETE FROM leaves WHERE id=?1", [lid]).is_err() {
+                return;
+            }
+        } else if d == lf {
+            if conn
+                .execute(
+                    "UPDATE leaves SET from_date=?1 WHERE id=?2",
+                    rusqlite::params![d.succ_opt().map(|x| x.to_string()), lid],
+                )
+                .is_err()
+            {
+                return;
+            }
+        } else if d == lt {
+            if conn
+                .execute(
+                    "UPDATE leaves SET to_date=?1 WHERE id=?2",
+                    rusqlite::params![d.pred_opt().map(|x| x.to_string()), lid],
+                )
+                .is_err()
+            {
+                return;
+            }
+        } else {
+            // الشطر الثاني [d+1 → lt] يُنسخ كما هو ثم يُقصَّر الأصل إلى [lf → d-1]
+            if conn
+                .execute(
+                    "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,
+                       comp_for_date,keep_punches,created_at)
+                     SELECT employee_id,?1,to_date,leave_type,paid,note,comp_for_date,keep_punches,created_at
+                     FROM leaves WHERE id=?2",
+                    rusqlite::params![d.succ_opt().map(|x| x.to_string()), lid],
+                )
+                .is_err()
+            {
+                return;
+            }
+            if conn
+                .execute(
+                    "UPDATE leaves SET to_date=?1 WHERE id=?2",
+                    rusqlite::params![d.pred_opt().map(|x| x.to_string()), lid],
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        // السنوية المدفوعة: كان خُصم يوم عند التسجيل ← يُعاد للرصيد
+        let refunded = ty == "annual" && paid;
+        if refunded {
+            let _ = conn.execute(
+                "UPDATE employees SET annual_leave_balance = annual_leave_balance + 1,
+                 updated_at=?1 WHERE id=?2",
+                rusqlite::params![
+                    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+                    employee_id
+                ],
+            );
+        }
+
+        let ty_name = match ty.as_str() {
+            "annual" => "سنوية",
+            "sick" => "مرضية",
+            "comp" => "عطلة تعويضية",
+            _ => "بدون أجر",
+        };
+        let tail = if refunded {
+            " وأُعيد يوم إلى رصيد الإجازات السنوية"
+        } else {
+            ""
+        };
+        insert_notification(
+            conn,
+            "leave_work",
+            Some(employee_id),
+            &format!("دوام في يوم إجازة: {name}"),
+            &format!(
+                "دوّم {name} يوم {ds} أثناء إجازة {ty_name} — أُلغيت الإجازة عن هذا اليوم{tail}، وأُعيد احتسابه حضوراً"
+            ),
+            &ds,
+        );
+    }
 }
 
 /// يعيد احتساب أيام الحضور لموظف/لكل الموظفين بين تاريخين.
@@ -716,7 +1346,7 @@ fn recompute_range(
                     "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
                      meal_allow,transport_allow,active,
                      overtime_enabled,meal_enabled,transport_enabled,weekend_paid,annual_leave_balance,
-                     annual_leave_days,leave_accrual_month
+                     annual_leave_days,leave_accrual_month,shift_id
                      FROM employees",
                 )
                 .map_err(|e| e.to_string())?;
@@ -742,6 +1372,9 @@ fn recompute_range(
                         annual_leave_balance: r.get(15)?,
                         annual_leave_days: r.get(16)?,
                         leave_accrual_month: r.get(17)?,
+                        shift_id: r.get::<_, Option<i64>>(18).ok().flatten(),
+                        // هذه الاستعلامات لا تقرأ الصلاحية — تُعامَل كمستخدم عادي
+                        device_privilege: 0,
                     })
                 })
                 .map_err(|e| e.to_string())?;
@@ -773,7 +1406,10 @@ fn recompute_range(
             continue;
         }
         let conn = state.db.lock().map_err(|e| e.to_string())?;
-        // جلب بصمات هذا الموظف في المدى (مع نوع كل بصمة للازدواج in/out)
+        // جلب بصمات هذا الموظف في المدى (مع نوع كل بصمة للازدواج in/out).
+        // نوسّع النافذة يوماً قبل ويوماً بعد: في الوردية الليلية قد يبدأ الدوام
+        // آخر اليوم السابق (دخول) وينتهي صباح اليوم التالي (خروج) — فنضمن
+        // التقاط الطرفين مهما ضاق مدى إعادة الحساب.
         let mut punches: Vec<(String, i64)> = Vec::new();
         {
             let mut st = conn
@@ -784,8 +1420,8 @@ fn recompute_range(
                      ORDER BY device_time",
                 )
                 .map_err(|e| e.to_string())?;
-            let from_s = format!("{}T00:00:00", from);
-            let to_s = format!("{}T23:59:59", to);
+            let from_s = format!("{}T00:00:00", *from - chrono::Duration::days(1));
+            let to_s = format!("{}T23:59:59", *to + chrono::Duration::days(1));
             let pin = emp.pin.clone().unwrap_or_default();
             let rows = st.query_map(
                 rusqlite::params![from_s, to_s, emp.id, pin],
@@ -795,7 +1431,12 @@ fn recompute_range(
                 punches = rows.flatten().collect();
             }
         }
-        // جلب الإجازات (مع حالة الدفع)
+        // دوام فعلي في يوم مغطّى بإجازة: تُلغى الإجازة ذلك اليوم ويُعاد يوم
+        // الرصيد السنوية المدفوعة (مع تنبيه في الجرس)، ثم يُعاد احتساب اليوم
+        // حضوراً — إلا إجازة أنشأها المسؤول صراحةً ليوم له بصمات (keep_punches).
+        resolve_work_on_leave(&conn, emp.id, &emp.name, &punches, *from, *to);
+
+        // جلب الإجازات (مع حالة الدفع) بعد الإلغاء التلقائي أعلاه
         let mut leaves: Vec<(NaiveDate, NaiveDate, String, bool)> = Vec::new();
         {
             let mut st = conn
@@ -865,7 +1506,10 @@ fn recompute_range(
             }
         }
 
-        let days = compute_days_for_employee(emp.id, emp.pin.as_deref().unwrap_or(""), &punches, &leaves, &holidays, &weekend, &no_break_dates, &ps, *from, *to, now);
+        // إعدادات هذا الموظف: ورديته (أو الوردية الرئيسية) — هي مرجع ساعات
+        // الدوام والاستراحة (تضبط حساب دوام الموظف).
+        let ps_emp = shift_settings(&conn, &ps, emp.shift_id);
+        let days = compute_days_for_employee(emp.id, emp.pin.as_deref().unwrap_or(""), &punches, &leaves, &holidays, &weekend, &no_break_dates, &ps_emp, *from, *to, now);
         for d in days {
             // الأيام المستقبلية لا تُسجَّل غياباً — تبقى بلا صف حتى يأتي يومها
             if d.date.as_str() > today_s.as_str() && d.absent {
@@ -923,9 +1567,11 @@ fn month_days_impl(conn: &Connection, period: &str) -> Result<Vec<AttendanceDay>
     let to = format!("{ny:04}-{nm:02}");
     let mut stmt = conn
         .prepare(
-            "SELECT id,employee_id,date,first_in,last_out,worked_min,late_min,early_leave_min,
-                    overtime_min,absent,leave_type,status,manual,leave_paid
-             FROM attendance_days WHERE date >= ?1 AND date < ?2 ORDER BY employee_id, date",
+            "SELECT a.id,a.employee_id,a.date,a.first_in,a.last_out,a.worked_min,a.late_min,
+                    a.early_leave_min,a.overtime_min,a.absent,a.leave_type,a.status,a.manual,
+                    a.leave_paid,(h.date IS NOT NULL),a.holiday_work_choice
+             FROM attendance_days a LEFT JOIN holidays h ON h.date = a.date
+             WHERE a.date >= ?1 AND a.date < ?2 ORDER BY a.employee_id, a.date",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -945,6 +1591,8 @@ fn month_days_impl(conn: &Connection, period: &str) -> Result<Vec<AttendanceDay>
                 status: r.get(11)?,
                 manual: r.get::<_, i64>(12).unwrap_or(0) != 0,
                 leave_paid: r.get::<_, Option<i64>>(13).ok().flatten().map(|v| v != 0),
+                holiday: r.get::<_, i64>(14).unwrap_or(0) != 0,
+                holiday_work_choice: r.get::<_, Option<String>>(15).ok().flatten(),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -984,7 +1632,7 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
             "SELECT id,pin,name,job_title,phone,daily_hours,break_min,hourly_rate,
              meal_allow,transport_allow,active,
              overtime_enabled,meal_enabled,transport_enabled,weekend_paid,annual_leave_balance,
-             annual_leave_days,leave_accrual_month
+             annual_leave_days,leave_accrual_month,shift_id
              FROM employees WHERE active=1 ORDER BY name",
         )
         .map_err(|e| e.to_string())?;
@@ -1010,6 +1658,9 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
                 annual_leave_balance: r.get(15)?,
                 annual_leave_days: r.get(16)?,
                 leave_accrual_month: r.get(17)?,
+                shift_id: r.get::<_, Option<i64>>(18).ok().flatten(),
+                // استعلام الرواتب لا يقرأ الصلاحية — تُعامَل كمستخدم عادي
+                device_privilege: 0,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1020,16 +1671,11 @@ fn payroll_impl(conn: &Connection, period: &str) -> Result<Vec<PayrollResult>, S
     for emp in employees {
         let emp_days: Vec<AttendanceDay> =
             all_days.iter().filter(|d| d.employee_id == emp.id).cloned().collect();
-        let mut ps_emp = ps.clone();
-        // أولويّة إعدادات الموظف إن خالفت الافتراضية
-        if emp.daily_hours > 0.0 {
-            ps_emp.daily_hours = emp.daily_hours;
-        }
+        // إعدادات هذا الموظف: ورديته (أو الوردية الرئيسية) — مرجع ساعات الدوام
+        // والاستراحة. ثم تُطبَّق تجاوزات الأجر/البدلات الفردية أدناه.
+        let mut ps_emp = shift_settings(conn, &ps, emp.shift_id);
         if emp.hourly_rate > 0.0 {
             ps_emp.hourly_rate = emp.hourly_rate;
-        }
-        if emp.break_min >= 0 {
-            ps_emp.break_min = emp.break_min;
         }
         // البدلات: مبالغ الموظف (تُشتقّ من الافتراضية عند الإنشاء)، وتُصفَّر عند الاستثناء
         ps_emp.meal_allow = if emp.meal_enabled { emp.meal_allow } else { 0.0 };
@@ -1178,6 +1824,230 @@ pub fn employee_payroll_history(
     Ok(rows.flatten().collect())
 }
 
+// ------------------------------------------------ دفع الرواتب + لقطة القسيمة
+//
+// حالة «مدفوع» الوحيدة في النظام (الأرشفة payroll_runs تجميد أرقام لا دفع).
+// ولقطة القسيمة تحفظ إعدادات الطباعة ونسبها لحظة الطباعة/الدفع — كي تبقى
+// القسيمة قابلة لإثبات ما طُبع فعلاً حتى لو تغيّرت الإعدادات لاحقاً.
+
+/// تعليم راتب موظف في شهر بعينه كمدفوع — يحفظ المبلغ وطريقة الدفع وتاريخها.
+/// إعادة التعليم لنفس (موظف، شهر) تستبدل السجل ولا تكرّره.
+fn mark_salary_paid_impl(
+    conn: &Connection,
+    employee_id: i64,
+    period: &str,
+    net: f64,
+    method: Option<String>,
+    note: Option<String>,
+) -> Result<String, String> {
+    let paid_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    conn.execute(
+        "INSERT INTO salary_payments(employee_id,period,net,method,note,paid_at)
+         VALUES(?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(employee_id,period) DO UPDATE SET
+           net=excluded.net, method=excluded.method, note=excluded.note,
+           paid_at=excluded.paid_at",
+        rusqlite::params![employee_id, period, net, method, note, paid_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(paid_at)
+}
+
+/// إلغاء تعليم الراتب كمدفوع — يعود الصافي إلى «غير مدفوع» (عدد الصفوف المحذوفة).
+fn unmark_salary_paid_impl(
+    conn: &Connection,
+    employee_id: i64,
+    period: &str,
+) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM salary_payments WHERE employee_id=?1 AND period=?2",
+        rusqlite::params![employee_id, period],
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// مدفوعات شهر بعينه — أو كل الفترات إن فُتحت الفترة (الأحدث أولاً).
+/// مع اسم الموظف من جدول الموظفين (LEFT JOIN — اسم اختياري للموظف المحذوف).
+fn salary_payments_impl(conn: &Connection, period: Option<String>) -> Result<Vec<Value>, String> {
+    let map = |r: &rusqlite::Row| {
+        Ok(json!({
+            "employee_id": r.get::<_, i64>(0)?,
+            "period": r.get::<_, String>(1)?,
+            "net": r.get::<_, f64>(2)?,
+            "method": r.get::<_, Option<String>>(3)?,
+            "note": r.get::<_, Option<String>>(4)?,
+            "paid_at": r.get::<_, String>(5)?,
+            "employee_name": r.get::<_, Option<String>>(6)?,
+        }))
+    };
+    let rows = if let Some(p) = period {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.employee_id, p.period, p.net, p.method, p.note, p.paid_at, e.name
+                 FROM salary_payments p LEFT JOIN employees e ON e.id = p.employee_id
+                 WHERE p.period=?1 ORDER BY p.employee_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let q = stmt.query_map([p], map).map_err(|e| e.to_string())?;
+        q.flatten().collect::<Vec<_>>()
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT p.employee_id, p.period, p.net, p.method, p.note, p.paid_at, e.name
+                 FROM salary_payments p LEFT JOIN employees e ON e.id = p.employee_id
+                 ORDER BY p.period DESC, p.employee_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let q = stmt.query_map([], map).map_err(|e| e.to_string())?;
+        q.flatten().collect::<Vec<_>>()
+    };
+    Ok(rows)
+}
+
+/// حفظ لقطة إعدادات الطباعة ونسبها وأرقام القسيمة — لحظة الطباعة أو لحظة
+/// الدفع. تستبدل لقطة (موظف، شهر) السابقة إن وُجدت. تُرجع وقت الحفظ (ISO).
+fn save_payslip_snapshot_impl(conn: &Connection, s: &PayslipSnapshot) -> Result<String, String> {
+    let printed_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+    conn.execute(
+        "INSERT INTO payslip_snapshots(employee_id,period,rate,ot_mult,p_work,p_risk,p_bonus,
+          basic,overtime,weekend_pay,allowances,holiday_work,comp_off,
+          share_work,share_risk,share_bonus,net,printed_at,enabled,sheet)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+         ON CONFLICT(employee_id,period) DO UPDATE SET
+           rate=excluded.rate, ot_mult=excluded.ot_mult, p_work=excluded.p_work,
+           p_risk=excluded.p_risk, p_bonus=excluded.p_bonus, basic=excluded.basic,
+           overtime=excluded.overtime, weekend_pay=excluded.weekend_pay,
+           allowances=excluded.allowances, holiday_work=excluded.holiday_work,
+           comp_off=excluded.comp_off, share_work=excluded.share_work,
+           share_risk=excluded.share_risk, share_bonus=excluded.share_bonus,
+           net=excluded.net, printed_at=excluded.printed_at,
+           enabled=excluded.enabled, sheet=excluded.sheet",
+        rusqlite::params![
+            s.employee_id,
+            s.period,
+            s.rate,
+            s.ot_mult,
+            s.p_work,
+            s.p_risk,
+            s.p_bonus,
+            s.basic,
+            s.overtime,
+            s.weekend_pay,
+            s.allowances,
+            s.holiday_work,
+            s.comp_off,
+            s.share_work,
+            s.share_risk,
+            s.share_bonus,
+            s.net,
+            printed_at,
+            s.enabled,
+            s.sheet
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(printed_at)
+}
+
+/// لقطات القسيمة لشهر بعينه — أو كل الفترات إن فُتحت الفترة (الأحدث أولاً).
+fn payslip_snapshots_impl(conn: &Connection, period: Option<String>) -> Result<Vec<Value>, String> {
+    const COLS: &str = "employee_id,period,rate,ot_mult,p_work,p_risk,p_bonus,
+                        basic,overtime,weekend_pay,allowances,holiday_work,comp_off,
+                        share_work,share_risk,share_bonus,net,printed_at,enabled,sheet";
+    let map = |r: &rusqlite::Row| {
+        Ok(json!({
+            "employee_id": r.get::<_, i64>(0)?,
+            "period": r.get::<_, String>(1)?,
+            "rate": r.get::<_, f64>(2)?,
+            "ot_mult": r.get::<_, f64>(3)?,
+            "p_work": r.get::<_, f64>(4)?,
+            "p_risk": r.get::<_, f64>(5)?,
+            "p_bonus": r.get::<_, f64>(6)?,
+            "basic": r.get::<_, f64>(7)?,
+            "overtime": r.get::<_, f64>(8)?,
+            "weekend_pay": r.get::<_, f64>(9)?,
+            "allowances": r.get::<_, f64>(10)?,
+            "holiday_work": r.get::<_, f64>(11)?,
+            "comp_off": r.get::<_, f64>(12)?,
+            "share_work": r.get::<_, f64>(13)?,
+            "share_risk": r.get::<_, f64>(14)?,
+            "share_bonus": r.get::<_, f64>(15)?,
+            "net": r.get::<_, f64>(16)?,
+            "printed_at": r.get::<_, String>(17)?,
+            "enabled": r.get::<_, bool>(18)?,
+            "sheet": r.get::<_, Option<String>>(19)?,
+        }))
+    };
+    let rows = if let Some(p) = period {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM payslip_snapshots WHERE period=?1 ORDER BY employee_id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let q = stmt.query_map([p], map).map_err(|e| e.to_string())?;
+        q.flatten().collect::<Vec<_>>()
+    } else {
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT {COLS} FROM payslip_snapshots ORDER BY period DESC, employee_id"
+            ))
+            .map_err(|e| e.to_string())?;
+        let q = stmt.query_map([], map).map_err(|e| e.to_string())?;
+        q.flatten().collect::<Vec<_>>()
+    };
+    Ok(rows)
+}
+
+#[tauri::command]
+pub fn mark_salary_paid(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    period: String,
+    net: f64,
+    method: Option<String>,
+    note: Option<String>,
+) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    mark_salary_paid_impl(&conn, employee_id, &period, net, method, note)
+}
+
+#[tauri::command]
+pub fn unmark_salary_paid(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    period: String,
+) -> Result<usize, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    unmark_salary_paid_impl(&conn, employee_id, &period)
+}
+
+#[tauri::command]
+pub fn salary_payments(
+    state: tauri::State<'_, AppState>,
+    period: Option<String>,
+) -> Result<Vec<Value>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    salary_payments_impl(&conn, period)
+}
+
+#[tauri::command]
+pub fn save_payslip_snapshot(
+    state: tauri::State<'_, AppState>,
+    snap: PayslipSnapshot,
+) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    save_payslip_snapshot_impl(&conn, &snap)
+}
+
+#[tauri::command]
+pub fn payslip_snapshots(
+    state: tauri::State<'_, AppState>,
+    period: Option<String>,
+) -> Result<Vec<Value>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    payslip_snapshots_impl(&conn, period)
+}
+
 // ---------------------------------------------------------------- تقرير يومي
 
 #[tauri::command]
@@ -1189,13 +2059,21 @@ pub fn get_daily_report(
     daily_report_impl(&conn, &date)
 }
 
-/// النواة المشتركة للتقرير اليومي (تتضمن أعلام اليوم: no_break / no_meal).
+/// النواة المشتركة للتقرير اليومي (تتضمن أعلام اليوم: no_break / no_meal، وهل
+/// التاريخ عطلة رسمية، ويوم البدل المسند لدوام العطلة أو العطلة التي يبدّلها).
 fn daily_report_impl(conn: &Connection, date: &str) -> Result<Vec<Value>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT a.id, a.employee_id, e.name, e.pin, a.first_in, a.last_out, a.worked_min,
                     a.late_min, a.early_leave_min, a.overtime_min, a.absent, a.status, a.manual,
-                    a.leave_type, a.leave_paid, a.no_break, a.no_meal
+                    a.leave_type, a.leave_paid, a.no_break, a.no_meal,
+                    (SELECT COUNT(*) FROM holidays h WHERE h.date = a.date),
+                    (SELECT l.from_date FROM leaves l
+                       WHERE l.employee_id = a.employee_id AND l.comp_for_date = a.date LIMIT 1),
+                    (SELECT l.comp_for_date FROM leaves l
+                       WHERE l.employee_id = a.employee_id AND l.leave_type = 'comp'
+                         AND l.from_date <= a.date AND l.to_date >= a.date LIMIT 1),
+                    a.holiday_work_choice
              FROM attendance_days a LEFT JOIN employees e ON e.id = a.employee_id
              WHERE a.date = ?1 ORDER BY e.name",
         )
@@ -1223,6 +2101,10 @@ fn daily_report_impl(conn: &Connection, date: &str) -> Result<Vec<Value>, String
             );
             m.insert("no_break".into(), json!(r.get::<_, i64>(15).unwrap_or(0) != 0));
             m.insert("no_meal".into(), json!(r.get::<_, i64>(16).unwrap_or(0) != 0));
+            m.insert("holiday".into(), json!(r.get::<_, i64>(17).unwrap_or(0) != 0));
+            m.insert("comp_off".into(), json!(r.get::<_, Option<String>>(18)?));
+            m.insert("comp_for".into(), json!(r.get::<_, Option<String>>(19)?));
+            m.insert("holiday_work_choice".into(), json!(r.get::<_, Option<String>>(20)?));
             Ok(Value::Object(m))
         })
         .map_err(|e| e.to_string())?;
@@ -1239,9 +2121,11 @@ fn day_row(
 ) -> Result<AttendanceDay, String> {
     let mut st = conn
         .prepare(
-            "SELECT id,employee_id,date,first_in,last_out,worked_min,late_min,early_leave_min,
-                    overtime_min,absent,leave_type,status,manual,leave_paid
-             FROM attendance_days WHERE employee_id=?1 AND date=?2",
+            "SELECT a.id,a.employee_id,a.date,a.first_in,a.last_out,a.worked_min,a.late_min,
+                    a.early_leave_min,a.overtime_min,a.absent,a.leave_type,a.status,a.manual,
+                    a.leave_paid,(h.date IS NOT NULL),a.holiday_work_choice
+             FROM attendance_days a LEFT JOIN holidays h ON h.date = a.date
+             WHERE a.employee_id=?1 AND a.date=?2",
         )
         .map_err(|e| e.to_string())?;
     st.query_row(rusqlite::params![employee_id, date], |r| {
@@ -1260,6 +2144,8 @@ fn day_row(
             status: r.get(11)?,
             manual: r.get::<_, i64>(12).unwrap_or(0) != 0,
             leave_paid: r.get::<_, Option<i64>>(13).ok().flatten().map(|v| v != 0),
+            holiday: r.get::<_, i64>(14).unwrap_or(0) != 0,
+            holiday_work_choice: r.get::<_, Option<String>>(15).ok().flatten(),
         })
     })
     .map_err(|e| e.to_string())
@@ -1285,8 +2171,20 @@ pub fn set_day_manual(
     first_in: Option<String>,
     last_out: Option<String>,
 ) -> Result<Value, String> {
-    let d = NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|e| e.to_string())?;
-    match mode.as_str() {
+    set_day_manual_impl(&state, employee_id, &date, &mode, first_in, last_out)
+}
+
+/// جسم `set_day_manual` على `&AppState` ليعمل من الاختبارات مباشرة.
+fn set_day_manual_impl(
+    state: &AppState,
+    employee_id: i64,
+    date: &str,
+    mode: &str,
+    first_in: Option<String>,
+    last_out: Option<String>,
+) -> Result<Value, String> {
+    let d = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    match mode {
         "annual" | "sick" | "unpaid" => {
             convert_day_to_leave(&state, employee_id, &date, &mode)?;
         }
@@ -1318,12 +2216,37 @@ pub fn set_day_manual(
             .map_err(|e| e.to_string())?;
         }
         "present" => {
-            remove_single_day_leave(&state, employee_id, &date)?;
             let fin_raw = first_in
                 .filter(|s| !s.trim().is_empty())
                 .ok_or("أدخل وقت الحضور (HH:MM)")?;
             let (fh, fm) =
                 parse_hhmm(&fin_raw).ok_or("صيغة وقت الحضور يجب أن تكون HH:MM")?;
+            // انصرافٌ أصغر من الحضور = دوامٌ يعبر منتصف الليل: يُنسب الانصراف
+            // ليومه التالي وتُحتسب الجلسة كاملة ليوم الدخول (مثال: دخول 22:00
+            // وخروج 02:00 صباح الغد = أربع ساعات). مهلة الدوام الجارٍ (14 سا)
+            // سقفٌ للمدة المقبولة هنا: ما زاد عنها أقرب لخطأ إدخال (مثل
+            // 06:00 ← 02:30) فيُرفض برسالة واضحة — قبل أي تغيير في القاعدة.
+            if let Some(parsed_out) = last_out
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .and_then(parse_hhmm)
+            {
+                if parsed_out < (fh, fm) {
+                    let span_min = (24 * 60)
+                        - (fh as i64 * 60 + fm as i64)
+                        + (parsed_out.0 as i64 * 60 + parsed_out.1 as i64);
+                    if span_min > crate::attendance::OPEN_PUNCH_GRACE_MIN {
+                        return Err(format!(
+                            "الانصراف {:02}:{:02} قبل الحضور {fh:02}:{fm:02} بمدة {:.1} ساعة \
+                             (تُحسب ليوم الغد) وحدود المدة 14 ساعة — راجع الوقتين",
+                            parsed_out.0,
+                            parsed_out.1,
+                            span_min as f64 / 60.0
+                        ));
+                    }
+                }
+            }
+            remove_single_day_leave(state, employee_id, date)?;
             let conn = state.db.lock().map_err(|e| e.to_string())?;
             // الانصراف: المُدخل أو آخر خروج محسوب (تعويض نسيان تسجيل الخروج)
             let fout_raw = last_out
@@ -1340,13 +2263,21 @@ pub fn set_day_manual(
                 .ok_or("أدخل وقت الانصراف (HH:MM) — لا يوجد خروج محسوب لتعويضه")?;
             let (lh, lm) =
                 parse_hhmm(&fout_raw).ok_or("صيغة وقت الانصراف يجب أن تكون HH:MM")?;
+            let out_date = if (lh, lm) < (fh, fm) {
+                d.succ_opt()
+                    .ok_or("التاريخ خارج النطاق")?
+                    .format("%Y-%m-%d")
+                    .to_string()
+            } else {
+                date.to_string()
+            };
             let s = settings_map(&conn);
-            let ps = payroll_settings(&s);
+            let ps = employee_settings(&conn, &payroll_settings(&s), employee_id);
             let weekend =
                 crate::payroll::parse_weekend(s.get("weekend_days").map(|x| x.as_str()));
             let punches = vec![
                 (format!("{date}T{fh:02}:{fm:02}:00"), 0i64),
-                (format!("{date}T{lh:02}:{lm:02}:00"), 1i64),
+                (format!("{out_date}T{lh:02}:{lm:02}:00"), 1i64),
             ];
             // احترام علم «إلغاء خصم الاستراحة» لو كان مفعّلاً لهذا اليوم
             let no_break: bool = conn
@@ -1519,15 +2450,29 @@ fn convert_day_to_leave(
             )
             .map_err(|e| e.to_string())?;
         }
-        // 4) إنشاء إجازة ليوم واحد
+        // 4) إنشاء إجازة ليوم واحد — وإن كان اليوم له بصمات (المسؤول يحوّل
+        //    يوم دوام إلى إجازة صراحةً) تُوسم الإجازة keep_punches فلا تُلغيها
+        //    إعادة الاحتساب التلقائية بسبب الدوام.
         let note = match kind {
             "annual" => "تحويل يوم إلى إجازة سنوية من شاشة الحضور",
             "sick" => "تحويل يوم إلى إجازة مرضية من شاشة الحضور",
             _ => "تحويل يوم إلى إجازة بدون أجر من شاشة الحضور",
         };
+        let has_punches: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM punches
+                 WHERE employee_id=?1 AND device_time>=?2 AND device_time<=?3",
+                rusqlite::params![
+                    employee_id,
+                    format!("{date}T00:00:00"),
+                    format!("{date}T23:59:59")
+                ],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
         conn.execute(
-            "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,keep_punches,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
             rusqlite::params![
                 employee_id,
                 date,
@@ -1535,6 +2480,7 @@ fn convert_day_to_leave(
                 leave_type,
                 paid as i64,
                 note,
+                (has_punches > 0) as i64,
                 chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
             ],
         )
@@ -1548,17 +2494,6 @@ fn convert_day_to_leave(
     }
     recompute_range(state, &d, &d)?;
     Ok(())
-}
-
-/// يقرأ HH:MM من تاريخ/وقت ISO ("…T06:00:00").
-fn hhmm_of(iso: &str) -> Option<(&str, &str)> {
-    let p = iso.split('T').nth(1)?;
-    if p.len() >= 5 && p[0..2].chars().all(|c| c.is_ascii_digit()) && p[3..5].chars().all(|c| c.is_ascii_digit())
-    {
-        Some((&p[0..2], &p[3..5]))
-    } else {
-        None
-    }
 }
 
 /// أزرار نافذة تعديل اليوم: إلغاء خصم الاستراحة / إزالة بدل الفطور.
@@ -1619,15 +2554,15 @@ fn set_day_flags_impl(
         // يغيّر خصم الاستراحة) — الغياب/الإجازة بلا ساعات فلا تتأثر.
         if m && matches!(status.as_str(), "present" | "late" | "incomplete") {
             if let (Some(fi), Some(fo)) = (first_in, last_out) {
-                if let (Some((fh, fm)), Some((lh, lm))) = (hhmm_of(&fi), hhmm_of(&fo)) {
+                {
+                    // تُعاد الاشتقاق من الوقتين المخزّنين كما هما (نوعاً بصمة):
+                    // قد يعبر الانصراف منتصف الليل فيكون تاريخه التالي، ولا
+                    // نطويه على تاريخ اليوم وإلا انعدمت الجلسة.
                     let s = settings_map(&conn);
-                    let ps = payroll_settings(&s);
+                    let ps = employee_settings(&conn, &payroll_settings(&s), employee_id);
                     let weekend =
                         crate::payroll::parse_weekend(s.get("weekend_days").map(|x| x.as_str()));
-                    let punches = vec![
-                        (format!("{date}T{fh}:{fm}:00"), 0i64),
-                        (format!("{date}T{lh}:{lm}:00"), 1i64),
-                    ];
+                    let punches = vec![(fi, 0i64), (fo, 1i64)];
                     let no_break_dates = if no_break { vec![d] } else { Vec::new() };
                     let days = compute_days_for_employee(
                         employee_id, "", &punches, &[], &[], &weekend, &no_break_dates, &ps, d, d,
@@ -1808,6 +2743,121 @@ pub fn detect_missing_events(conn: &Connection, today: &str) -> Vec<String> {
                     fresh.push(format!("{name} — خروج {date} بدون دخول"));
                 }
             }
+        }
+    }
+
+    // 3) دوام في عطلة رسمية اختار المسؤول له تعويض «يوم بدل» ولم يُسند بعد:
+    //    نُنبّه المسؤول ليمنح الموظف يوماً بديلاً (يمكن في الشهر التالي) من
+    //    شاشة الحضور — زر «يوم بدل» على صف اليوم.
+    if let Ok(mut st) = conn.prepare(
+        "SELECT a.employee_id, e.name, a.date FROM attendance_days a
+         JOIN employees e ON e.id = a.employee_id
+         WHERE a.date <= ?1 AND a.first_in IS NOT NULL AND e.active = 1
+           AND a.holiday_work_choice = 'comp'
+           AND a.date IN (SELECT date FROM holidays)
+           AND NOT EXISTS (SELECT 1 FROM leaves l
+                WHERE l.employee_id = a.employee_id AND l.comp_for_date = a.date)
+         ORDER BY a.date DESC LIMIT 90",
+    ) {
+        if let Ok(rows) = st.query_map([today], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) {
+            for (id, name, date) in rows.flatten() {
+                let title = format!("يوم بدل مطلوب: {name}");
+                let body = format!(
+                    "دوّم {name} يوم {date} (عطلة رسمية) واخترت له تعويض «يوم بدل»: امنحه يوم راحة تعويضياً (يمكن في الشهر التالي) من زر «يوم بدل» في سجل الحضور"
+                );
+                if insert_notification(conn, "comp_off", Some(id), &title, &body, &date) {
+                    fresh.push(format!("{name} — يوم بدل عن دوام {date}"));
+                }
+            }
+        }
+    }
+
+    // 4) غياب اليوم: موظف مفعّل مرّ عليه يوم دوام (ليس عطلة/إجازة) بلا بصمة
+    //    ولا إجازة مسجّلة → تنبيه غياب. يُحفظ ليومه فلا يتكرر.
+    if let Ok(mut st) = conn.prepare(
+        "SELECT a.employee_id, e.name, a.date
+         FROM attendance_days a JOIN employees e ON e.id = a.employee_id
+         WHERE a.date = ?1 AND e.active = 1 AND a.status = 'absent' AND a.absent = 1
+           AND a.leave_type IS NULL AND a.manual = 0
+         ORDER BY e.name",
+    ) {
+        if let Ok(rows) = st.query_map([today], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        }) {
+            for (id, name, date) in rows.flatten() {
+                let title = format!("غياب: {name}");
+                let body = format!("{name} غاب اليوم {date} دون بصمة ولا إجازة مسجّلة");
+                if insert_notification(conn, "absent", Some(id), &title, &body, &date) {
+                    fresh.push(format!("{name} — غياب {date}"));
+                }
+            }
+        }
+    }
+
+    // 5) انصراف مبكر: أُغلق اليوم بخروج قبل نهاية الوردية (early_leave_min>0).
+    //    يُحفظ ليومه فلا يتكرر.
+    if let Ok(mut st) = conn.prepare(
+        "SELECT a.employee_id, e.name, a.date, a.early_leave_min, COALESCE(a.last_out,'')
+         FROM attendance_days a JOIN employees e ON e.id = a.employee_id
+         WHERE a.date = ?1 AND e.active = 1 AND a.early_leave_min > 0
+           AND a.manual = 0
+         ORDER BY a.early_leave_min DESC",
+    ) {
+        if let Ok(rows) = st.query_map([today], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        }) {
+            for (id, name, date, early, lout) in rows.flatten() {
+                let t = lout
+                    .split('T')
+                    .nth(1)
+                    .map(|x| x[..5.min(x.len())].to_string())
+                    .unwrap_or_default();
+                let title = format!("انصراف مبكر: {name}");
+                let body = format!(
+                    "انصرف {name} يوم {date}{} مبكراً بـ {early} دقيقة عن نهاية ورديته",
+                    if t.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" الساعة {t}")
+                    }
+                );
+                if insert_notification(conn, "early_leave", Some(id), &title, &body, &date) {
+                    fresh.push(format!("{name} — انصراف مبكر {early} دقيقة ({date})"));
+                }
+            }
+        }
+    }
+
+    // 6) لا بصمات اليوم: لم تصل أي بصمة من أي موظف فعال اليوم — قد يكون الجهاز
+    //    غير متصل/معطّل. تنبيه عام (بلا موظف) يُحفظ ليومه.
+    let any_today: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM punches WHERE substr(device_time,1,10) = ?1",
+            [today],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if any_today == 0 {
+        let title = "لا بصمات اليوم".to_string();
+        let body = format!("لم تصل أي بصمة من الجهاز اليوم {today} — تحقق من اتصال جهاز البصمة والمزامنة");
+        if insert_notification(conn, "no_punches", None, &title, &body, today) {
+            fresh.push(format!("لا بصمات اليوم ({today})"));
         }
     }
 
@@ -2288,7 +3338,8 @@ pub fn list_leaves(state: tauri::State<'_, AppState>) -> Result<Vec<Value>, Stri
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
-            "SELECT l.id, l.employee_id, e.name, l.from_date, l.to_date, l.leave_type, l.note, l.paid
+            "SELECT l.id, l.employee_id, e.name, l.from_date, l.to_date, l.leave_type, l.note, l.paid,
+                    l.comp_for_date
              FROM leaves l LEFT JOIN employees e ON e.id=l.employee_id
              ORDER BY l.from_date DESC",
         )
@@ -2303,6 +3354,7 @@ pub fn list_leaves(state: tauri::State<'_, AppState>) -> Result<Vec<Value>, Stri
             "leave_type": r.get::<_, String>(5)?,
             "note": r.get::<_, String>(6)?,
             "paid": r.get::<_, i64>(7)? != 0,
+            "comp_for_date": r.get::<_, Option<String>>(8)?,
         }))
     })
     .map_err(|e| e.to_string())?;
@@ -2372,6 +3424,206 @@ pub fn holiday_delete(
     Ok(())
 }
 
+/// يضبط خيار التعويض لليوم الذي داوم فيه الموظف في عطلة رسمية:
+/// `choice = "money"` (نقدي، 62 + الساعات×1.5) أو `"comp"` (يوم بدل).
+/// يُضبط لكل موظف/يوم على حدة من شاشة الحضور، ثم يُعاد احتساب اليوم.
+#[tauri::command]
+pub fn set_holiday_work_choice(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    date: String,
+    choice: String,
+) -> Result<Value, String> {
+    set_holiday_work_choice_impl(&state, employee_id, &date, &choice)
+}
+
+/// نواة ضبط خيار التعويض (بلا غلاف tauri لتُختبر مباشرة).
+fn set_holiday_work_choice_impl(
+    state: &AppState,
+    employee_id: i64,
+    date: &str,
+    choice: &str,
+) -> Result<Value, String> {
+    let d = NaiveDate::parse_from_str(date, "%Y-%m-%d").map_err(|_| "تاريخ غير صالح")?;
+    let choice = match choice.trim() {
+        "money" => "money",
+        "comp" => "comp",
+        // "none"/"" = بلا خيار صريح (الافتراضي نقدي عند الحساب)
+        "" | "none" => "",
+        _ => return Err("خيار غير معروف — المتاح: money أو comp".into()),
+    };
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        // يوم عطلة رسمية مسجّل؟
+        let is_holiday: i64 = conn
+            .query_row("SELECT COUNT(*) FROM holidays WHERE date=?1", [date], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if is_holiday == 0 {
+            return Err(format!("{date} ليس عطلة رسمية مسجّلة"));
+        }
+        // لا يجوز ربط الخيار بيوم صار فيه يوم بدل مسند (تعارض تعويض مزدوج)
+        if choice == "comp" {
+            let already: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM leaves WHERE employee_id=?1 AND comp_for_date=?2",
+                    rusqlite::params![employee_id, date],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if already > 0 {
+                return Err(format!(
+                    "يوجد يوم بدل مسند عن عطلة {date} — احذفه أولاً لتغيير الخيار"
+                ));
+            }
+        }
+        let val: Option<&str> = if choice.is_empty() { None } else { Some(choice) };
+        conn.execute(
+            "UPDATE attendance_days SET holiday_work_choice=?3
+             WHERE employee_id=?1 AND date=?2",
+            rusqlite::params![employee_id, date, val],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    // أعِد احتساب اليوم ليظهر الأثر في الحضور والراتب فوراً
+    recompute_range(state, &d, &d)?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let name: String = conn
+        .query_row("SELECT name FROM employees WHERE id=?1", [employee_id], |r| r.get(0))
+        .unwrap_or_default();
+    drop(conn);
+    Ok(json!({
+        "employee_id": employee_id,
+        "employee_name": name,
+        "date": date,
+        "choice": choice,
+    }))
+}
+
+/// إسناد «يوم بدل» (عطلة تعويضية) لموظف دوّم في عطلة رسمية واختير له تعويض
+/// «يوم بدل»: يُدفع ليوم البدل أجر يوم العطلة (62)، ويمكن أن يكون اليوم **في
+/// الشهر التالي**. يسجّل إجازة نوع `comp` على تاريخ البدل مع
+/// `comp_for_date` = تاريخ العطلة التي عوّضها، ثم يعيد احتساب يوم البدل
+/// ليظهر عطلة تعويضية في الحضور والراتب.
+#[tauri::command]
+pub fn assign_comp_off(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    holiday_date: String,
+    comp_date: String,
+) -> Result<Value, String> {
+    assign_comp_off_impl(&state, employee_id, &holiday_date, &comp_date)
+}
+
+/// نواة إسناد يوم البدل (بلا غلاف tauri لتُختبر مباشرة).
+fn assign_comp_off_impl(
+    state: &AppState,
+    employee_id: i64,
+    holiday_date: &str,
+    comp_date: &str,
+) -> Result<Value, String> {
+    let hd = NaiveDate::parse_from_str(holiday_date, "%Y-%m-%d")
+        .map_err(|_| "تاريخ العطلة غير صالح")?;
+    let cd = NaiveDate::parse_from_str(comp_date, "%Y-%m-%d")
+        .map_err(|_| "تاريخ يوم البدل غير صالح")?;
+    // يوم البدل تعويضي: يجب أن يكون بعد تاريخ العطلة نفسها (يوم استراحة
+    // في المستقبل بدلاً من دوام يوم العطلة) — لا يصح قبلها أو يومها.
+    if cd <= hd {
+        return Err(format!(
+            "يوم البدل {comp_date} يجب أن يكون بعد تاريخ العطلة {holiday_date}"
+        ));
+    }
+    let new_id;
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+        // 1) التاريخ عطلة رسمية مسجّلة؟
+        let is_holiday: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM holidays WHERE date=?1",
+                [&holiday_date],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if is_holiday == 0 {
+            return Err(format!("{holiday_date} ليس عطلة رسمية مسجّلة"));
+        }
+
+        // 2) الموظف دوّم فعلاً في تلك العطلة (له حضور مسجّل)؟
+        let worked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attendance_days
+                 WHERE employee_id=?1 AND date=?2 AND first_in IS NOT NULL",
+                rusqlite::params![employee_id, holiday_date],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if worked == 0 {
+            return Err(format!("لا يوجد دوام مسجّل للموظف في عطلة {holiday_date}"));
+        }
+
+        // 3) لا يوم بدل سابق لنفس العطلة
+        let already: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM leaves WHERE employee_id=?1 AND comp_for_date=?2",
+                rusqlite::params![employee_id, holiday_date],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if already > 0 {
+            return Err(format!(
+                "سبق إسناد يوم بدل عن عطلة {holiday_date} — احذفه من بطاقة الموظف لتغييره"
+            ));
+        }
+
+        // 4) يوم البدل غير محجوز بإجازة أخرى
+        let busy: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM leaves
+                 WHERE employee_id=?1 AND from_date<=?2 AND to_date>=?2",
+                rusqlite::params![employee_id, comp_date],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if busy > 0 {
+            return Err(format!("اليوم {comp_date} محجوز بإجازة أخرى لهذا الموظف"));
+        }
+
+        // 5) تسجيل يوم البدل (لا يُخصم من أي رصيد)
+        let note = format!("عطلة تعويضية عن دوام عطلة رسمية {holiday_date}");
+        conn.execute(
+            "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,
+               comp_for_date,created_at)
+             VALUES(?1,?2,?2,'comp',1,?3,?4,?5)",
+            rusqlite::params![
+                employee_id,
+                comp_date,
+                note,
+                holiday_date,
+                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        new_id = conn.last_insert_rowid();
+    }
+
+    // احتسب يوم البدل (ويوم العطلة) لتظهر الحالة الجديدة فوراً
+    recompute_range(state, &cd, &cd)?;
+    recompute_range(state, &hd, &hd)?;
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let name: String = conn
+        .query_row("SELECT name FROM employees WHERE id=?1", [employee_id], |r| r.get(0))
+        .unwrap_or_default();
+    drop(conn);
+    Ok(json!({
+        "id": new_id,
+        "employee_id": employee_id,
+        "name": name,
+        "holiday_date": holiday_date,
+        "comp_date": comp_date,
+    }))
+}
+
 // ---------------------------------------------------------------- استيراد/تصدير
 
 /// يعيد ملخصاً سريعاً للوحة التحكم.
@@ -2410,6 +3662,154 @@ pub fn dashboard(state: tauri::State<'_, AppState>) -> Result<Value, String> {
         "total_punches": punches_total,
         "last_sync": last_sync,
     }))
+}
+
+// ------------------------------------------------------------ بيانات تجريبية
+
+/// بيانات تجريبية لأول تشغيل: تُنشأ **مرة واحدة فقط** إذا كانت القاعدة فارغة
+/// تماماً (لا موظفين ولا بصمات) — كي تظهر بطاقات لوحة التحكم والرسوم حيّة
+/// بدل «—» حتى أول مزامنة حقيقية. تُعلَّم بـ demo_seeded فلا تعود تتكرر،
+/// ويمكن حذفها من الإعدادات (زر «حذف البيانات التجريبية»).
+/// تعيد عدد الموظفين التجريبيين المُنشأين.
+pub fn seed_demo_if_empty(conn: &Connection) -> Result<usize, String> {
+    let s = settings_map(conn);
+    if setting(&s, "demo_seeded", "0") == "1" {
+        return Ok(0);
+    }
+    // قاعدة فيها موظفون حقيقيون؟ لا نُدخل تجريبياً فوق بياناتك أبداً.
+    let real: i64 = conn
+        .query_row("SELECT COUNT(*) FROM employees", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if real > 0 {
+        db::set_setting(conn, "demo_seeded", "1").map_err(|e| e.to_string())?;
+        return Ok(0);
+    }
+
+    let s = settings_map(conn);
+    let now = now_in_tz(&s);
+    let today = now.date();
+    let weekend = crate::payroll::parse_weekend(s.get("weekend_days").map(|x| x.as_str()));
+    let now_str = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
+
+    // (pin, اسم, اسم لاتيني, وظيفة, ساعات/يوم, سعر الساعة)
+    let demo: [(&str, &str, &str, &str, f64, f64); 5] = [
+        ("9001", "علاء عبدالله", "alaa", "مدير عام", 8.5, 25.0),
+        ("9002", "أحمد سمير", "ahmad", "محاسب", 8.5, 15.0),
+        ("9003", "سارة خالد", "sara", "موظفة استقبال", 8.0, 12.0),
+        ("9004", "محمد يوسف", "mohammed", "فني صيانة", 9.0, 18.0),
+        ("9005", "ليلى حسن", "laila", "مسؤولة مخزن", 8.0, 11.0),
+    ];
+
+    let mut ids: Vec<i64> = Vec::new();
+    for (pin, name, name_en, job, hours, rate) in demo.iter() {
+        conn.execute(
+            "INSERT INTO employees(pin,name,name_en,job_title,daily_hours,hourly_rate,active,
+             overtime_enabled,meal_enabled,transport_enabled,weekend_paid,
+             annual_leave_balance,annual_leave_days,created_at,updated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,1,1,1,1,1,14,14,?7,?7)",
+            rusqlite::params![pin, name, name_en, job, hours, rate, now_str],
+        )
+        .map_err(|e| e.to_string())?;
+        ids.push(conn.last_insert_rowid());
+    }
+
+    // بصمات آخر 7 أيام بتوقيت المنطقة: دخول قريب من البداية وخروج بعد النهاية،
+    // مع تنويع واقعي (تأخير، خروج مبكر، غياب يوم، بصمة ناقصة) لتعبئة الرسوم.
+    // اليوم لا نضيف ما لم يحن وقته بعد حتى لا تظهر بصمات في المستقبل.
+    let mut punches = 0usize;
+    for off in 0..7i64 {
+        let d = today - chrono::Duration::days(off);
+        if weekend.contains(&d.weekday().num_days_from_monday()) {
+            continue;
+        }
+        for (i, id) in ids.iter().enumerate() {
+            // غياب تجريبي: الموظف الثالث يوم قبل أمس
+            if i == 2 && off == 2 {
+                continue;
+            }
+            let (in_h, in_m, out_h, out_m) = match i {
+                0 => (8, 53, 17, 32), // منتظم
+                1 => (9, 18, 17, 30), // متأخر دائماً
+                2 => (8, 58, 17, 31),
+                3 => (8, 45, 16, 10), // خروج مبكر
+                _ => (9, 0, 17, 35),
+            };
+            let pin = demo[i].0;
+            // بصمة ناقصة (دخول بلا خروج): الموظف الخامس أمس
+            let skip_out = i == 4 && off == 1;
+            let mk = |d: chrono::NaiveDate, h: i32, m: i32| -> (String, i64) {
+                (
+                    d.and_hms_opt(h as u32, m as u32, (i as u64 * 7 % 60) as u32)
+                        .unwrap()
+                        .format("%Y-%m-%dT%H:%M:%S")
+                        .to_string(),
+                    if h < 12 { 0 } else { 1 }, // 0=دخول 1=خروج
+                )
+            };
+            // لا نسجّل بصمة في مستقبل اليوم: ننتظر حلول وقتها
+            let due = |h: i32, m: i32| {
+                off > 0
+                    || now.time()
+                        >= d.and_hms_opt(h as u32, m as u32, 0).unwrap().time()
+            };
+            if due(in_h, in_m) {
+                let (t, pt) = mk(d, in_h, in_m);
+                let r = conn.execute(
+                    "INSERT INTO punches(employee_id,pin,device_time,punch_type,work_code,raw_status,synced_at)
+                     VALUES(?1,?2,?3,?4,0,0,?5) ON CONFLICT(pin,device_time) DO NOTHING",
+                    rusqlite::params![id, pin, t, pt, now_str],
+                );
+                if let Ok(n) = r {
+                    punches += n;
+                }
+            }
+            if !skip_out && due(out_h, out_m) {
+                let (t, pt) = mk(d, out_h, out_m);
+                let r = conn.execute(
+                    "INSERT INTO punches(employee_id,pin,device_time,punch_type,work_code,raw_status,synced_at)
+                     VALUES(?1,?2,?3,?4,0,0,?5) ON CONFLICT(pin,device_time) DO NOTHING",
+                    rusqlite::params![id, pin, t, pt, now_str],
+                );
+                if let Ok(n) = r {
+                    punches += n;
+                }
+            }
+        }
+    }
+
+    db::set_setting(conn, "demo_seeded", "1").map_err(|e| e.to_string())?;
+    let id_list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    db::set_setting(conn, "demo_seeds", &id_list).map_err(|e| e.to_string())?;
+    log::info!("seeded {} demo employees, {punches} demo punches", ids.len());
+    Ok(ids.len())
+}
+
+/// حذف البيانات التجريبية (موظفو pins 9001..9005 وبصماتهم وأيامهم) — زر في
+/// الإعدادات. لا تمسّ الموظفين الحقيقيين مهما كان أعدادهم.
+#[tauri::command]
+pub fn clear_demo_data(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let seeds = setting(&settings_map(&conn), "demo_seeds", "");
+    if seeds.is_empty() {
+        return Ok(json!({"deleted": 0}));
+    }
+    let mut deleted = 0usize;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    for id in seeds.split(',').filter_map(|x| x.trim().parse::<i64>().ok()) {
+        deleted += tx
+            .execute("DELETE FROM punches WHERE employee_id=?1", [&id])
+            .map_err(|e| e.to_string())?;
+        let _ = tx.execute("DELETE FROM attendance_days WHERE employee_id=?1", [&id]);
+        let n = tx
+            .execute("DELETE FROM employees WHERE id=?1", [&id])
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            deleted += n;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    db::set_setting(&conn, "demo_seeds", "").map_err(|e| e.to_string())?;
+    Ok(json!({"deleted": deleted}))
 }
 
 /// يبني (أو يحدّث) رابط شعار الشركة من ملف مختار (نص المسار يُخزَّن في الإعدادات).
@@ -2577,8 +3977,9 @@ mod tests {
     /// (recompute_range ← payroll_impl) الموافق لسيناريو القبول المطلوب:
     /// حسن وخليل (81 — الموظف الجديد) — دوام يومي 06:00–16:30 ما عدا الجمعة
     /// (عطلة أسبوعية تلقائية)، وأكتوبر 2026 (31 يوماً فيها 5 جمع) بدوام كامل.
-    /// المتوقّع لكل منهما: أجر اليوم 165 ₪ + بدل فطور 7 ₪، والجمع 5 × 62،
-    /// والصافي 4782 ₪ — بالطريقة الأسبوعية الافتراضية (62 ÷ أيام السبت–الخميس).
+    /// المتوقّع لكل منهما: أجر اليوم 165 ₪ (8 سا أساسية + 2 سا إضافي
+    /// عند 1.5×) + بدل فطور 7 ₪، والجمع 5 × 62، والصافي 4782 ₪ —
+    /// بالطريقة الأسبوعية الافتراضية (62 ÷ أيام السبت–الخميس).
     #[test]
     fn hassan_october_2026_scenario_end_to_end() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2669,6 +4070,8 @@ mod tests {
                     workdays_seen += 1;
                     let daily = (d.worked_min - d.overtime_min) as f64 / 60.0 * 15.0
                         + d.overtime_min as f64 / 60.0 * 15.0 * 1.5;
+                    // 600 د فعلية − 480 د حد الدوام (8.5 سا − استراحة) = 120 د إضافي
+                    // والأجر 165 ₪ (8 سا × 15 + 2 سا × 15 × 1.5)
                     if d.status != "present" || d.worked_min != 600 || d.overtime_min != 120 {
                         problems.push(format!(
                             "{who} · {}: الحالة {} وساعات فعلية {} (إضافي {}) — المتوقّع حاضر 600 د بإضافي 120",
@@ -2677,7 +4080,7 @@ mod tests {
                     }
                     if (daily - 165.0).abs() > 1e-9 {
                         problems.push(format!(
-                            "{who} · {}: أجر اليوم {:.2} ₪ بدل 165.00 ₪",
+                            "{who} · {}: أجر اليوم {:.2} ₪ بدل 165 ₪",
                             d.date, daily
                         ));
                     }
@@ -2709,7 +4112,7 @@ mod tests {
             );
             let expectations: Vec<(String, f64, f64)> = vec![
                 (format!("{who} — عدد أيام الحضور"), r.days_present as f64, 26.0),
-                (format!("{who} — أجر الدوام الأساسي (26 × 165)"), r.base_pay, 4290.0),
+                (format!("{who} — أجر الدوام (26 × 165)"), r.base_pay, 4290.0),
                 (format!("{who} — بدل الفطور فقط (26 × 7)"), r.allowances, 182.0),
                 (format!("{who} — بدل العطلة (5 جمع × 62)"), r.weekend_pay, 310.0),
                 (format!("{who} — الصافي النهائي"), r.net_pay, 4782.0),
@@ -2867,70 +4270,6 @@ mod tests {
         let (bal, anchor) = balance_and_anchor(&conn, 1);
         assert!((bal - 9.0 / 28.0).abs() < 1e-4, "فبراير 9/28 من الشهر: {bal}");
         assert_eq!(anchor.as_deref(), Some("2026-02"));
-    }
-
-    /// أداة تشغيل يدوية (تُستدعى فقط مع `--ignored`): تعيد احتساب فترة على
-    /// قاعدة بيانات حقيقية تحدّدها المتغيّرة ATTENDANCE_LIVE_DB وتطبع حالة
-    /// أيام الجمعة + صفوف الرواتب. تتجاهل بصمت عند غياب المتغيّرة.
-    #[test]
-    #[ignore = "أداة يدوية على قاعدة حية — لا تعمل في الاختبار العادي"]
-    fn live_recompute_tool() {
-        let Ok(path) = std::env::var("ATTENDANCE_LIVE_DB") else {
-            return;
-        };
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        // كل النطاق الموجود في attendance_days (يشمل شهوراً سابقة بجمع «غياب»)
-        let (from_s, to_s): (String, String) = conn
-            .query_row(
-                "SELECT MIN(date), MAX(date) FROM attendance_days",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
-        let from = NaiveDate::parse_from_str(&from_s, "%Y-%m-%d").unwrap();
-        let to = NaiveDate::parse_from_str(&to_s, "%Y-%m-%d").unwrap();
-        println!("المدى: {from} ← {to}");
-        let state = AppState {
-            db: Mutex::new(conn),
-            base: std::env::temp_dir(),
-        };
-        let n = recompute_range(&state, &from, &to).unwrap();
-        println!("أُعيد احتساب {} صفاً", n);
-
-        let conn = state.db.lock().unwrap();
-        {
-            let mut st = conn
-                .prepare(
-                    "SELECT strftime('%Y-%m', date), status, COUNT(*) FROM attendance_days
-                     WHERE strftime('%w', date)='5' GROUP BY 1,2 ORDER BY 1,2",
-                )
-                .unwrap();
-            let rows = st.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            });
-            for row in rows.unwrap().flatten() {
-                println!("جمع {} · {}: {}", row.0, row.1, row.2);
-            }
-        }
-        for r in payroll_impl(&conn, "2026-10").unwrap() {
-            if r.pin.as_deref() == Some("80") || r.pin.as_deref() == Some("81") {
-                println!(
-                    "{} ({}) — أيام {} | أجر {:.2} | بدلات {:.2} | عطلة {:.2} ({}) | صافي {:.2}",
-                    r.employee_name,
-                    r.pin.clone().unwrap_or_default(),
-                    r.days_present,
-                    r.base_pay,
-                    r.allowances,
-                    r.weekend_pay,
-                    r.weekend_days_paid,
-                    r.net_pay
-                );
-            }
-        }
     }
 
     // ------------------------------------- تحويل يوم إلى إجازة + أزرار اليوم
@@ -3103,6 +4442,92 @@ mod tests {
         assert_eq!(worked_of(&state), 600, "الرجوع يعيد الخصم");
     }
 
+    /// إدخال يدوي عابر لمنتصف الليل: الانصراف أصغر من الحضور يُنسب ليوم الغد
+    /// ويحتسب كل ساعات الجلسة ليوم الدخول (22:00 ← 02:00 = 4 سا − 30 د).
+    #[test]
+    fn manual_overnight_entry_counts_session_on_entry_day() {
+        let state = day_test_state(5.0);
+        set_day_manual_impl(
+            &state,
+            1,
+            DAY,
+            "present",
+            Some("22:00".into()),
+            Some("02:00".into()),
+        )
+        .unwrap();
+        let conn = state.db.lock().unwrap();
+        let (fi, fo, worked, status, manual): (String, String, i64, String, i64) = conn
+            .query_row(
+                "SELECT first_in,last_out,worked_min,status,manual FROM attendance_days
+                 WHERE employee_id=1 AND date=?1",
+                [DAY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(fi, "2026-10-19T22:00:00", "الحضور في يومه");
+        assert_eq!(fo, "2026-10-20T02:00:00", "الانصراف منسوب ليوم الغد");
+        assert_eq!(worked, 210, "أربع ساعات − استراحة 30 د");
+        assert_eq!(status, "present");
+        assert_eq!(manual, 1, "تعديل يدوي مثبّت");
+    }
+
+    /// إدخالٌ يبني مدة تتجاوز 14 ساعة عبر الليل (06:00 ← 02:30) يُرفض برسالة
+    /// واضحة **قبل** أي تغيير في القاعدة (لا يُمسّ اليوم ولا الرصيد).
+    #[test]
+    fn manual_overnight_entry_over_14h_rejected_without_touching_data() {
+        let state = day_test_state(5.0);
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        // اليوم إجازة سنوية أولاً — لو قبل الإدخال لقُلِّص الرصيد أو أُزيلت الإجازة
+        convert_day_to_leave(&state, 1, DAY, "annual").unwrap();
+        assert_eq!(balance_of(&state), 4.0, "خصم يوم الإجازة");
+
+        let err = set_day_manual_impl(
+            &state,
+            1,
+            DAY,
+            "present",
+            Some("06:00".into()),
+            Some("02:30".into()),
+        )
+        .unwrap_err();
+        assert!(err.contains("14"), "الرسالة تشير لحد المدة: {err}");
+        assert_eq!(balance_of(&state), 4.0, "لا لمس للرصيد عند الرفض");
+        let (leave,): (Option<String>,) = state
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT leave_type FROM attendance_days WHERE employee_id=1 AND date=?1",
+                [DAY],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(leave.as_deref(), Some("annual"), "الإجازة باقية كما كانت");
+    }
+
+    /// الدخول بلا انصراف بعد الإدخال الليلي لا يُفسد الجلسة: تبديل علم
+    /// الاستراحة على صف يدوي عابر لمنتصف الليل يُبقي الجلسة كاملة.
+    #[test]
+    fn overnight_manual_row_keeps_hours_when_toggling_break() {
+        let state = day_test_state(5.0);
+        set_day_manual_impl(
+            &state,
+            1,
+            DAY,
+            "present",
+            Some("22:00".into()),
+            Some("02:00".into()),
+        )
+        .unwrap();
+        assert_eq!(worked_of(&state), 210, "الجلسة قبل التبديل");
+        set_day_flags_impl(&state, 1, DAY, true, false).unwrap();
+        assert_eq!(worked_of(&state), 240, "بلا خصم استراحة — الجلسة كاملة");
+        set_day_flags_impl(&state, 1, DAY, false, false).unwrap();
+        assert_eq!(worked_of(&state), 210, "الرجوع يعيد الخصم");
+    }
+
     /// زر «إزالة بدل الفطور»: يطرح 7 ₪ من البدلات ومن الصافي في الرواتب.
     #[test]
     fn no_meal_day_excluded_from_payroll_allowances() {
@@ -3172,8 +4597,477 @@ mod tests {
         assert_eq!(fresh.len(), 1, "بعد انتهاء المهلة يُنبَّه: {fresh:?}");
     }
 
-    /// الأيام المستقبلية لا تُسجَّل غياباً: الصفوف المستقبلية القديمة تُنظَّف
-    /// عند إعادة الاحتساب ولا يُنشأ غياب بعد اليوم (كان يضخّم ملخّص الشهر).
+    // --------------------------------- دوام في يوم إجازة + العطلة الرسمية
+
+    /// دوام فعلي في يوم إجازة سنوية مدفوعة: تُلغى الإجازة ويُعاد الرصيد
+    /// ويصبح اليوم حضوراً — مع تنبيه محفوظ في الجرس.
+    #[test]
+    fn working_on_paid_annual_leave_cancels_and_refunds() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,created_at)
+                 VALUES(1,'2026-10-19','2026-10-19','annual',1,'','x')",
+                [],
+            )
+            .unwrap();
+            // الرصيد كان خُصم عند تسجيل الإجازة يدوياً
+            conn.execute(
+                "UPDATE employees SET annual_leave_balance=4.0 WHERE id=1",
+                [],
+            )
+            .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        assert_eq!(day_status(&state).0, "present", "أُعيد احتسابه حضوراً");
+        assert_eq!(balance_of(&state), 5.0, "أُعيد يوم الرصيد السنوية");
+        let conn = state.db.lock().unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM leaves WHERE employee_id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "حُذفت إجازة اليوم الواحد");
+        let notif: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notifications WHERE kind='leave_work' AND day=?1",
+                [DAY],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(notif, 1, "تنبيه الإلغاء محفوظ");
+    }
+
+    /// الإجازة غير المدفوعة (أو المرضية بلا خصم) تُلغى عند الدوام بلا مساس بالرصيد.
+    #[test]
+    fn working_on_unpaid_leave_cancels_without_refund() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,created_at)
+                 VALUES(1,'2026-10-19','2026-10-19','annual',0,'','x')",
+                [],
+            )
+            .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        assert_eq!(day_status(&state).0, "present");
+        assert_eq!(balance_of(&state), 5.0, "لا استعادة لما لم يُخصم");
+    }
+
+    /// الوردية الليلية عبر إعادة الحساب الكاملة: دوام 20:00→04:00 يُسجَّل
+    /// ليوم الوردية واحد (لا ينشطر على يومين ولا يظهر «خروج بلا دخول» صباحاً)،
+    /// وتُجمع ساعاته كاملة.
+    #[test]
+    fn overnight_shift_recompute_keeps_one_row() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            // الوردية هي مصدر ساعات الدوام الآن: نضبط الوردية الرئيسية ليلية.
+            conn.execute(
+                "UPDATE shifts SET work_start='20:00', work_end='04:00' WHERE is_default=1",
+                [],
+            )
+            .unwrap();
+            conn.execute("DELETE FROM punches", []).unwrap();
+            for (dt, pt) in [("2026-10-19T20:00:00", 0i64), ("2026-10-20T04:00:00", 1i64)] {
+                conn.execute(
+                    "INSERT INTO punches(employee_id,pin,device_time,punch_type,synced_at)
+                     VALUES(1,'1',?1,?2,'x')",
+                    rusqlite::params![dt, pt],
+                )
+                .unwrap();
+            }
+        }
+        let from = NaiveDate::parse_from_str("2026-10-19", "%Y-%m-%d").unwrap();
+        let to = NaiveDate::parse_from_str("2026-10-20", "%Y-%m-%d").unwrap();
+        recompute_range(&state, &from, &to).unwrap();
+
+        let conn = state.db.lock().unwrap();
+        let shift: (String, Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT status, first_in, last_out, worked_min FROM attendance_days
+                 WHERE employee_id=1 AND date='2026-10-19'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(shift.0, "present");
+        assert_eq!(shift.1.as_deref(), Some("2026-10-19T20:00:00"));
+        assert_eq!(shift.2.as_deref(), Some("2026-10-20T04:00:00"));
+        assert_eq!(shift.3, 450, "8 ساعات − استراحة 30 د");
+
+        // يوم 20 (صباحاً) لا يحمل بصمة → لا «بصمة ناقصة» ولا خروج بلا دخول
+        let next: (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, first_in FROM attendance_days
+                 WHERE employee_id=1 AND date='2026-10-20'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(next.0, "incomplete", "لا خروج بلا دخول");
+        assert!(next.1.is_none());
+    }
+
+    /// إجازة متعددة الأيام ودوام في وسطها: تُشطر الإجازة (يبقى ما قبل اليوم
+    /// وما بعده) ويُعاد يوم واحد للرصيد ويصبح يوم الدوام حضوراً.
+    #[test]
+    fn working_in_middle_of_multi_day_leave_splits_it() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO leaves(employee_id,from_date,to_date,leave_type,paid,note,created_at)
+                 VALUES(1,'2026-10-17','2026-10-21','annual',1,'','x')",
+                [],
+            )
+            .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        assert_eq!(day_status(&state).0, "present", "يوم الدوام حضور");
+        assert_eq!(balance_of(&state), 6.0, "يوم واحد فقط أُعيد");
+        let conn = state.db.lock().unwrap();
+        let mut st = conn
+            .prepare("SELECT from_date,to_date FROM leaves WHERE employee_id=1 ORDER BY from_date")
+            .unwrap();
+        let ranges: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            ranges,
+            vec![
+                ("2026-10-17".to_string(), "2026-10-18".to_string()),
+                ("2026-10-20".to_string(), "2026-10-21".to_string()),
+            ],
+            "الإجازة انشطرت حول يوم الدوام"
+        );
+    }
+
+    /// استثناء مهم: تحويل المسؤول ليوم له بصمات إلى إجازة (keep_punches) لا
+    /// يلغيه الاحتساب التلقائي — يبقى إجازة كما أراد المسؤول.
+    #[test]
+    fn admin_conversion_of_worked_day_is_not_auto_cancelled() {
+        let state = day_test_state(5.0);
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        convert_day_to_leave(&state, 1, DAY, "annual").unwrap();
+        assert_eq!(day_status(&state).0, "leave");
+        // إعادة احتساب إضافية (كما في المزامنة) لا تُلغي التحويل
+        recompute_range(&state, &d, &d).unwrap();
+        assert_eq!(day_status(&state).0, "leave", "التحويل اليدوي محفوظ");
+        assert_eq!(balance_of(&state), 4.0, "لا استعادة للرصيد");
+    }
+
+    /// «يوم بدل» لموظف دوّم في عطلة رسمية (سياسة comp): يسجّل عطلة تعويضية
+    /// في تاريخ لاحق (يمكن في الشهر التالي)، ويُدفع لها أجر يوم العطلة 62.
+    #[test]
+    fn comp_off_assignment_creates_paid_rest_day() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')",
+                [DAY],
+            )
+            .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        assert_eq!(day_status(&state).0, "present", "الدوام في العطلة حضور");
+
+        // إسناد يوم بدل في 2026-11-03 (الشهر التالي)
+        let r = assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+        assert_eq!(r["comp_date"], "2026-11-03");
+
+        {
+            let conn = state.db.lock().unwrap();
+            let row: (String, String, i64, Option<String>) = conn
+                .query_row(
+                    "SELECT leave_type, from_date, paid, comp_for_date FROM leaves
+                     WHERE employee_id=1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap();
+            assert_eq!(row.0, "comp");
+            assert_eq!(row.1, "2026-11-03");
+            assert_eq!(row.2, 1, "مدفوع");
+            assert_eq!(row.3.as_deref(), Some(DAY), "مرتبط بعطلة دوامه");
+        }
+        // يوم البدل نفسه صار عطلة تعويضية في الحضور
+        {
+            let conn = state.db.lock().unwrap();
+            let st: (String, String) = conn
+                .query_row(
+                    "SELECT status, leave_type FROM attendance_days
+                     WHERE employee_id=1 AND date='2026-11-03'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(st, ("leave".to_string(), "comp".to_string()));
+        }
+
+        // إسناد ثانٍ لنفس العطلة يُرفض
+        let err = assign_comp_off_impl(&state, 1, DAY, "2026-11-04").unwrap_err();
+        assert!(err.contains("سبق إسناد"), "رسالة الرفض: {err}");
+    }
+
+    /// يوم البدل يجب أن يكون بعد تاريخ العطلة (يوم استراحة في المستقبل) —
+    /// رفض يوم قبلها أو يومها نفسها.
+    #[test]
+    fn comp_off_date_must_be_after_holiday() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        // يوم العطلة نفسه مرفوض
+        let err = assign_comp_off_impl(&state, 1, DAY, DAY).unwrap_err();
+        assert!(err.contains("يجب أن يكون بعد"), "رسالة الرفض: {err}");
+        // تاريخ قبل العطلة مرفوض
+        let err = assign_comp_off_impl(&state, 1, DAY, "2026-10-10").unwrap_err();
+        assert!(err.contains("يجب أن يكون بعد"), "رسالة الرفض: {err}");
+        // بعدها يُقبل
+        assign_comp_off_impl(&state, 1, DAY, "2026-10-27").unwrap();
+    }
+
+    /// سياسة comp: تنبيه «يوم بدل مطلوب» يظهر حتى يُسند، ويختفي بعده؛
+    /// ولا يظهر إطلاقاً في السياسة النقدية.
+    #[test]
+    fn comp_off_notification_appears_until_assigned() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        // الافتراضي «نقدي» (بلا خيار صريح): لا تنبيه يوم بدل
+        {
+            let conn = state.db.lock().unwrap();
+            let fresh = detect_missing_events(&conn, DAY);
+            assert!(!fresh.iter().any(|f| f.contains("يوم بدل")), "{fresh:?}");
+        }
+
+        // اختيار المسؤول «يوم بدل» لهذا اليوم ← التنبيه يظهر
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute(
+                "UPDATE attendance_days SET holiday_work_choice='comp'
+                 WHERE employee_id=1 AND date=?1",
+                [DAY],
+            )
+            .unwrap();
+            let fresh = detect_missing_events(&conn, DAY);
+            assert!(
+                fresh.iter().any(|f| f.contains("يوم بدل")),
+                "تنبيه يوم البدل مطلوب: {fresh:?}"
+            );
+        }
+
+        // بعد الإسناد يختفي
+        assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+        {
+            let conn = state.db.lock().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM attendance_days a
+                     JOIN employees e ON e.id=a.employee_id
+                     WHERE a.date=?1 AND a.first_in IS NOT NULL AND e.active=1
+                       AND a.date IN (SELECT date FROM holidays)
+                       AND NOT EXISTS (SELECT 1 FROM leaves l
+                            WHERE l.employee_id=a.employee_id AND l.comp_for_date=a.date)",
+                    [DAY],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "لم يعد هناك دوام عطلة بلا يوم بدل");
+        }
+    }
+
+    /// سياسة «نقدي»: الراتب يضم62 + ساعات×1.5 بدل الأجر العادي ليوم العطلة.
+    #[test]
+    fn holiday_work_payflows_through_payroll() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        let conn = state.db.lock().unwrap();
+        let r = &payroll_impl(&conn, "2026-10").unwrap()[0];
+        // الموظف الاختباري: 15 ₪/ساعة، بدل فطور 7 — يوم العطلة 6 ساعات عمل
+        // فعلية (10.5 سا − 30 د استراحة = 600 د):62 + (10 × 15 × 1.5) = 287
+        assert_eq!(r.holiday_work_days, 1);
+        assert!((r.holiday_work_pay - 287.0).abs() < 1e-6, "{}", r.holiday_work_pay);
+        assert!((r.base_pay).abs() < 1e-9, "لا أجر ساعات عادي فوقها");
+        assert!((r.allowances - 7.0).abs() < 1e-9);
+        assert!((r.net_pay - 294.0).abs() < 1e-6, "{}", r.net_pay);
+    }
+
+    /// اختيار «يوم بدل» لكل موظف/يوم من شاشة الحضور: يُحدّث العمود، ويعيد
+    /// الاحتساب فيصير أجر ساعات يوم العطلة عادياً (بلا 62 في يومه)، ويظهر
+    /// الخيار في التقرير اليومي؛ ورفض غير العطلة، ورفض «بدل» بعد إسناد يوم بدل.
+    #[test]
+    fn holiday_work_choice_switches_day_to_comp() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+
+        // افتراضياً نقدي: 62 + (10 سا × 15 × 1.5) = 287
+        {
+            let conn = state.db.lock().unwrap();
+            let r = &payroll_impl(&conn, "2026-10").unwrap()[0];
+            assert_eq!(r.holiday_work_days, 1);
+            assert!((r.holiday_work_pay - 287.0).abs() < 1e-6);
+        }
+
+        // يختار المسؤول «يوم بدل»
+        let res = set_holiday_work_choice_impl(&state, 1, DAY, "comp").unwrap();
+        assert_eq!(res["choice"], "comp");
+        {
+            let conn = state.db.lock().unwrap();
+            let choice: Option<String> = conn
+                .query_row(
+                    "SELECT holiday_work_choice FROM attendance_days
+                     WHERE employee_id=1 AND date=?1",
+                    [DAY],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(choice.as_deref(), Some("comp"));
+            // صار أجر الساعات عادياً (لا 62 ولا مضاعف): 600 د عمل − 120 إضافي
+            // = 480 د أساسية (8 سا) + إضافي 2 سا × 15 × 1.5 = 165 ₪
+            let r = &payroll_impl(&conn, "2026-10").unwrap()[0];
+            assert_eq!(r.holiday_work_days, 0);
+            assert!((r.holiday_work_pay).abs() < 1e-9);
+            assert!((r.total_worked_hours - 8.0).abs() < 1e-6, "{}", r.total_worked_hours);
+            assert!((r.base_pay - 165.0).abs() < 1e-6, "{}", r.base_pay);
+            // الخيار يظهر في التقرير اليومي
+            let rows = daily_report_impl(&conn, DAY).unwrap();
+            assert_eq!(rows[0]["holiday_work_choice"], "comp");
+        }
+
+        // رفض غير العطلة
+        let err = set_holiday_work_choice_impl(&state, 1, "2026-10-20", "comp").unwrap_err();
+        assert!(err.contains("عطلة رسمية"), "{err}");
+        // رفض خيار غير معروف
+        let err = set_holiday_work_choice_impl(&state, 1, DAY, "ghost").unwrap_err();
+        assert!(err.contains("خيار غير معروف"), "{err}");
+
+        // بعد إسناد يوم بدل يُرفض تغيير الخيار إلى «بدل» مرة أخرى
+        assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+        let err = set_holiday_work_choice_impl(&state, 1, DAY, "comp").unwrap_err();
+        assert!(err.contains("يوم بدل مسند"), "{err}");
+    }
+
+    /// يوم بدل مسند يُدفع له 62 في راتب شهره (حتى لو كان في الشهر التالي).
+    #[test]
+    fn comp_off_day_paid_in_its_own_month() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+
+        let conn = state.db.lock().unwrap();
+        let r = &payroll_impl(&conn, "2026-11").unwrap()[0];
+        assert_eq!(r.comp_off_days, 1);
+        assert!((r.comp_off_pay - 62.0).abs() < 1e-9, "أجر يوم العطلة 62");
+        // دوام العطلة في نوفمبر غير موجود — الدفع هنا ليوم البدل فقط
+        assert!((r.net_pay - 62.0).abs() < 1e-9, "{}", r.net_pay);
+    }
+
+    /// التقرير اليومي يكشف: هل التاريخ عطلة رسمية، ويوم البدل المسند،
+    /// والعطلة التي يبدّلها يوم البدل نفسه.
+    #[test]
+    fn daily_report_exposes_holiday_and_comp_off() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        let rows = {
+            let conn = state.db.lock().unwrap();
+            daily_report_impl(&conn, DAY).unwrap()
+        };
+        assert_eq!(rows[0]["holiday"], true, "التاريخ عطلة رسمية");
+        assert!(rows[0]["comp_off"].is_null(), "لم يُسند بعد");
+
+        assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+        let rows = {
+            let conn = state.db.lock().unwrap();
+            daily_report_impl(&conn, DAY).unwrap()
+        };
+        assert_eq!(rows[0]["comp_off"], "2026-11-03", "يظهر يوم البدل المسند");
+
+        let rows = {
+            let conn = state.db.lock().unwrap();
+            daily_report_impl(&conn, "2026-11-03").unwrap()
+        };
+        assert_eq!(rows[0]["status"], "leave");
+        assert_eq!(rows[0]["leave_type"], "comp");
+        assert_eq!(rows[0]["comp_for"], DAY, "العطلة التي عوّضها");
+    }
+
+    /// إعادة احتساب الشهر بعد إسناد يوم بدل لا تُلغي يوم البدل (لا بصمات فيه).
+    #[test]
+    fn comp_off_survives_full_month_recompute() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("INSERT INTO holidays(date,name,created_at) VALUES(?1,'عيد','x')", [DAY])
+                .unwrap();
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        assign_comp_off_impl(&state, 1, DAY, "2026-11-03").unwrap();
+
+        let from = NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+        recompute_range(&state, &from, &to).unwrap();
+
+        let conn = state.db.lock().unwrap();
+        let st: String = conn
+            .query_row(
+                "SELECT status FROM attendance_days WHERE employee_id=1 AND date='2026-11-03'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(st, "leave", "يوم البدل باقٍ بعد إعادة احتساب الشهر");
+    }
+
+    /// الأيام المستقبلية لا تُسجَّل غياباً: الصفوف المستقبلية القديمة تُنظَّف    /// عند إعادة الاحتساب ولا يُنشأ غياب بعد اليوم (كان يضخّم ملخّص الشهر).
     #[test]
     fn future_days_are_not_recorded_as_absent() {
         let state = day_test_state(5.0);
@@ -3212,5 +5106,445 @@ mod tests {
             )
             .unwrap();
         assert!(weekend_rows > 0, "الجمعة المستقبلية تبقى عطلة أسبوعية");
+    }
+
+    // ------------------------------------------------------------- الورديات
+
+    /// الوردية تُضبط بحقولها وتعود في السرد مع عدد الموظفين.
+    #[test]
+    fn shift_crud_roundtrip() {
+        let state = day_test_state(5.0);
+        // الوردية الرئيسية موجودة ومبنية من الإعداد العام
+        let shifts = {
+            let conn = state.db.lock().unwrap();
+            list_shifts_impl(&conn).unwrap()
+        };
+        assert_eq!(shifts.len(), 1);
+        assert!(shifts[0].is_default && shifts[0].active);
+        assert_eq!(
+            shifts[0].employee_count, 0,
+            "الموظفون غير المسنَدين يرثون الرئيسية عبر NULL (لا يُحتسبون إسناداً صريحاً)"
+        );
+
+        // أنشئ وردية جديدة
+        let id = {
+            let conn = state.db.lock().unwrap();
+            upsert_shift_impl(
+                &conn,
+                Shift {
+                    id: 0,
+                    name: "وردية مسائية".into(),
+                    work_start: "16:00".into(),
+                    work_end: "23:30".into(),
+                    daily_hours: 7.0,
+                    break_min: 20,
+                    is_default: false,
+                    active: true,
+                    employee_count: 0,
+                },
+            )
+            .unwrap()
+        };
+        let shifts = {
+            let conn = state.db.lock().unwrap();
+            list_shifts_impl(&conn).unwrap()
+        };
+        assert_eq!(shifts.len(), 2);
+        let night = shifts.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(night.work_start, "16:00");
+        assert_eq!(night.daily_hours, 7.0);
+        assert!(!night.is_default);
+
+        // اجعلها الرئيسية
+        {
+            let conn = state.db.lock().unwrap();
+            set_default_shift_impl(&conn, id).unwrap();
+        }
+        let shifts = {
+            let conn = state.db.lock().unwrap();
+            list_shifts_impl(&conn).unwrap()
+        };
+        assert_eq!(shifts.iter().filter(|s| s.is_default).count(), 1);
+        assert!(shifts.iter().find(|s| s.id == id).unwrap().is_default);
+
+        // احذف الأخرى → يبقى واحدة ولا تُحذف الأخيرة
+        let other = shifts.iter().find(|s| s.id != id).unwrap().id;
+        {
+            let conn = state.db.lock().unwrap();
+            delete_shift_impl(&conn, other).unwrap();
+        }
+        assert_eq!(
+            state.db.lock().unwrap().query_row("SELECT COUNT(*) FROM shifts", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let err = {
+            let conn = state.db.lock().unwrap();
+            delete_shift_impl(&conn, id).unwrap_err()
+        };
+        assert!(err.contains("آخر وردية"), "لا تُحذف آخر وردية: {err}");
+    }
+
+    /// رفض المدخلات غير الصالحة في الوردية.
+    #[test]
+    fn shift_validation_rejects_bad_input() {
+        let state = day_test_state(5.0);
+        let conn = state.db.lock().unwrap();
+        let mk = |name: &str, ws: &str, we: &str, dh: f64, brk: i64| Shift {
+            id: 0,
+            name: name.into(),
+            work_start: ws.into(),
+            work_end: we.into(),
+            daily_hours: dh,
+            break_min: brk,
+            is_default: false,
+            active: true,
+            employee_count: 0,
+        };
+        assert!(upsert_shift_impl(&conn, mk("", "09:00", "17:00", 8.0, 30)).is_err());
+        assert!(upsert_shift_impl(&conn, mk("س", "25:00", "17:00", 8.0, 30)).is_err());
+        assert!(upsert_shift_impl(&conn, mk("س", "09:00", "09:00", 8.0, 30)).is_err());
+        assert!(upsert_shift_impl(&conn, mk("س", "09:00", "17:00", 0.0, 30)).is_err());
+        assert!(upsert_shift_impl(&conn, mk("س", "09:00", "17:00", 8.0, -1)).is_err());
+    }
+
+    /// الإسناد الجماعي: يسنِد عدة موظفين لوردية، ويُخرج من أُزيل من القائمة،
+    /// ويعيد عدد من تغيّرت ورديتهم فعلاً (لا يُحتسب من لم تتغيّر).
+    #[test]
+    fn bulk_assign_employees_to_shift() {
+        let state = day_test_state(5.0);
+        // موظفان إضافيان
+        {
+            let conn = state.db.lock().unwrap();
+            for id in [2i64, 3] {
+                conn.execute(
+                    "INSERT INTO employees(id,pin,name,name_en,daily_hours,break_min,hourly_rate,
+                     meal_allow,transport_allow,active,weekend_paid,annual_leave_balance,created_at,updated_at)
+                     VALUES(?1,?2,'موظف','Emp',8.5,30,15.0,7.0,0.0,1,1,0.0,'x','x')",
+                    rusqlite::params![id, id.to_string()],
+                )
+                .unwrap();
+            }
+        }
+        let shift_id = {
+            let conn = state.db.lock().unwrap();
+            upsert_shift_impl(
+                &conn,
+                Shift {
+                    id: 0,
+                    name: "مسائية".into(),
+                    work_start: "16:00".into(),
+                    work_end: "23:30".into(),
+                    daily_hours: 7.0,
+                    break_min: 20,
+                    is_default: false,
+                    active: true,
+                    employee_count: 0,
+                },
+            )
+            .unwrap()
+        };
+
+        // إسناد الموظفين 1 و2
+        let changed = {
+            let conn = state.db.lock().unwrap();
+            assign_employees_to_shift_impl(&conn, &[1, 2], Some(shift_id)).unwrap()
+        };
+        assert_eq!(changed, 2, "تغيّرت وردية موظفين");
+        {
+            let conn = state.db.lock().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM employees WHERE shift_id=?1",
+                    [shift_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 2);
+            // العدّاد في list_shifts يعكس الإسناد الصريح
+            let shifts = list_shifts_impl(&conn).unwrap();
+            assert_eq!(shifts.iter().find(|s| s.id == shift_id).unwrap().employee_count, 2);
+        }
+
+        // إعادة إسناد نفس المجموعة = لا تغيير
+        let changed = {
+            let conn = state.db.lock().unwrap();
+            assign_employees_to_shift_impl(&conn, &[1, 2], Some(shift_id)).unwrap()
+        };
+        assert_eq!(changed, 0, "لا تغيير عند إعادة الإسناد نفسه");
+
+        // إخراج الموظف 2 (إلى الرئيسية = NULL) وإضافة 3
+        {
+            let conn = state.db.lock().unwrap();
+            let c1 = assign_employees_to_shift_impl(&conn, &[2], None).unwrap();
+            let c2 = assign_employees_to_shift_impl(&conn, &[3], Some(shift_id)).unwrap();
+            assert_eq!((c1, c2), (1, 1));
+        }
+        {
+            let conn = state.db.lock().unwrap();
+            let sid2: Option<i64> = conn
+                .query_row("SELECT shift_id FROM employees WHERE id=2", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(sid2, None, "الموظف المُزال يعود للرئيسية (NULL)");
+            let sid3: Option<i64> = conn
+                .query_row("SELECT shift_id FROM employees WHERE id=3", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(sid3, Some(shift_id));
+        }
+
+        // وردية غير موجودة تُرفض
+        let err = {
+            let conn = state.db.lock().unwrap();
+            assign_employees_to_shift_impl(&conn, &[1], Some(99999)).unwrap_err()
+        };
+        assert!(err.contains("غير موجودة"), "{err}");
+    }
+
+    /// موظف على وردية مختلفة يُحتسب بتوقيتها: وردية 16:00→23:30 تجعل بصمة
+    /// 16:00 حضوراً (بلا تأخير) بينما الإعداد العام 06:00 كان سيجعلها متأخرة.
+    #[test]
+    fn employee_shift_changes_attendance_calc() {
+        let state = day_test_state(5.0);
+        // وردية مسائية بلا استراحة (لتبسيط الساعات) وساعات أساسية 7
+        let night_id = {
+            let conn = state.db.lock().unwrap();
+            upsert_shift_impl(
+                &conn,
+                Shift {
+                    id: 0,
+                    name: "مسائية".into(),
+                    work_start: "16:00".into(),
+                    work_end: "23:00".into(),
+                    daily_hours: 7.0,
+                    break_min: 0,
+                    is_default: false,
+                    active: true,
+                    employee_count: 0,
+                },
+            )
+            .unwrap()
+        };
+        {
+            let conn = state.db.lock().unwrap();
+            conn.execute("UPDATE employees SET shift_id=?1 WHERE id=1", [night_id]).unwrap();
+            conn.execute("DELETE FROM punches", []).unwrap();
+            for (dt, pt) in [("2026-10-19T16:00:00", 0i64), ("2026-10-19T23:00:00", 1i64)] {
+                conn.execute(
+                    "INSERT INTO punches(employee_id,pin,device_time,punch_type,synced_at)
+                     VALUES(1,'1',?1,?2,'x')",
+                    rusqlite::params![dt, pt],
+                )
+                .unwrap();
+            }
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        let conn = state.db.lock().unwrap();
+        let (status, worked, late): (String, i64, i64) = conn
+            .query_row(
+                "SELECT status, worked_min, late_min FROM attendance_days
+                 WHERE employee_id=1 AND date=?1",
+                [DAY],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "present");
+        assert_eq!(worked, 420, "7 ساعات بلا استراحة");
+        assert_eq!(late, 0, "دخل في بداية ورديته (16:00) — لا تأخير");
+    }
+
+    /// مهلة التأخير تُطبَّق: حضور 09:15 مع مهلة 20 دقيقة → تأخير 0.
+    #[test]
+    fn grace_late_min_suppresses_small_late() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            // وردية تبدأ 09:00 واستراحة صفر لتبسيط الحساب
+            conn.execute(
+                "UPDATE shifts SET work_start='09:00', work_end='17:00', break_min=0 WHERE is_default=1",
+                [],
+            )
+            .unwrap();
+            db::set_setting(&conn, "grace_late_min", "20").unwrap();
+            conn.execute("DELETE FROM punches", []).unwrap();
+            for (dt, pt) in [("2026-10-19T09:15:00", 0i64), ("2026-10-19T17:00:00", 1i64)] {
+                conn.execute(
+                    "INSERT INTO punches(employee_id,pin,device_time,punch_type,synced_at)
+                     VALUES(1,'1',?1,?2,'x')",
+                    rusqlite::params![dt, pt],
+                )
+                .unwrap();
+            }
+        }
+        let d = NaiveDate::parse_from_str(DAY, "%Y-%m-%d").unwrap();
+        recompute_range(&state, &d, &d).unwrap();
+        let late: i64 = {
+            let conn = state.db.lock().unwrap();
+            conn.query_row(
+                "SELECT late_min FROM attendance_days WHERE employee_id=1 AND date=?1",
+                [DAY],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(late, 0, "15 دقيقة ضمن مهلة 20 د = تأخير صفر");
+    }
+
+    /// كشف التنبيهات الجديدة: غياب اليوم، الانصراف المبكر، ولا بصمات.
+    #[test]
+    fn new_alerts_detected() {
+        let state = day_test_state(5.0);
+        {
+            let conn = state.db.lock().unwrap();
+            // يوم بطريقة عادية ثم نضع صفوف الحالات يدوياً (تنبيهات تقرأ المخزّن)
+            conn.execute(
+                "INSERT OR REPLACE INTO attendance_days(employee_id,date,first_in,last_out,
+                 worked_min,late_min,early_leave_min,overtime_min,absent,status,manual)
+                 VALUES(1,'2026-10-19','2026-10-19T09:00:00','2026-10-19T15:00:00',
+                 300,0,120,0,0,'present',0)",
+                [],
+            )
+            .unwrap();
+            // الموظف رقم 2 غائب اليوم
+            conn.execute(
+                "INSERT INTO employees(id,pin,name,name_en,daily_hours,break_min,hourly_rate,
+                 meal_allow,transport_allow,active,created_at,updated_at)
+                 VALUES(2,'2','ثانٍ','Second',8.5,30,10.0,7.0,0.0,1,'x','x')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO attendance_days(employee_id,date,worked_min,late_min,
+                 early_leave_min,overtime_min,absent,status,manual)
+                 VALUES(2,'2026-10-19',0,0,0,0,1,'absent',0)",
+                [],
+            )
+            .unwrap();
+            // لا بصمات اليوم إطلاقاً (نمسحها)
+            conn.execute("DELETE FROM punches", []).unwrap();
+        }
+        let fresh = detect_missing_events(&state.db.lock().unwrap(), "2026-10-19");
+        assert!(
+            fresh.iter().any(|s| s.contains("غاب") || s.contains("غياب")),
+            "تنبيه غياب مفقود: {fresh:?}"
+        );
+        assert!(
+            fresh.iter().any(|s| s.contains("انصراف مبكر")),
+            "تنبيه انصراف مبكر مفقود: {fresh:?}"
+        );
+        assert!(
+            fresh.iter().any(|s| s.contains("لا بصمات")),
+            "تنبيه لا بصمات مفقود: {fresh:?}"
+        );
+    }
+
+    /// دفع الشهر: تعليم ثم عرض ثم إلغاء — والتعليم ثانية لنفس (موظف، شهر)
+    /// يستبدل السجل لا يكرّره (ضمانة عدم تضاعف صفوف الدفع).
+    #[test]
+    fn salary_payment_mark_list_unmark() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_db(&conn).unwrap();
+        let at = mark_salary_paid_impl(&conn, 9, "2026-10", 5000.0, Some("نقدي".into()), None)
+            .unwrap();
+        assert!(!at.is_empty(), "تاريخ الدفع يجب ألا يكون فارغاً");
+        let all = salary_payments_impl(&conn, Some("2026-10".into())).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0]["net"], 5000.0);
+        assert_eq!(all[0]["method"], "نقدي");
+        // تعليم ثانٍ للفترة نفسها = تحديث لا تكرار
+        mark_salary_paid_impl(&conn, 9, "2026-10", 5100.0, Some("تحويل".into()), None).unwrap();
+        let all = salary_payments_impl(&conn, Some("2026-10".into())).unwrap();
+        assert_eq!(all.len(), 1, "لا يتكرر سطر الدفع لنفس الشهر");
+        assert_eq!(all[0]["net"], 5100.0);
+        assert_eq!(all[0]["method"], "تحويل");
+        // فلترة بآخر الشهر: شهر آخر بلا دفعات
+        assert!(
+            salary_payments_impl(&conn, Some("2026-11".into()))
+                .unwrap()
+                .is_empty()
+        );
+        // إلغاء الدفع يحذف السجل
+        let del = unmark_salary_paid_impl(&conn, 9, "2026-10").unwrap();
+        assert_eq!(del, 1);
+        assert!(salary_payments_impl(&conn, Some("2026-10".into()))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// لقطة القسيمة: تُحفظ إعدادات الطباعة ونسبها والأرقام لحظة الطباعة،
+    /// وتُستبدل بطباعة/دفع ثانٍ بإعدادات جديدة (لقطة واحدة لكل موظف وشهر).
+    #[test]
+    fn payslip_snapshot_saves_and_replaces() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_db(&conn).unwrap();
+        let snap = PayslipSnapshot {
+            employee_id: 9,
+            period: "2026-10".into(),
+            rate: 8.5,
+            ot_mult: 1.5,
+            p_work: 45.0,
+            p_risk: 45.0,
+            p_bonus: 10.0,
+            basic: 1700.0,
+            overtime: 300.0,
+            weekend_pay: 62.0,
+            allowances: 120.0,
+            holiday_work: 0.0,
+            comp_off: 0.0,
+            share_work: 1000.0,
+            share_risk: 1000.0,
+            share_bonus: 222.0,
+            net: 4404.0,
+            enabled: true,
+            sheet: Some(r#"{"period":"2026-10","net":4404}"#.into()),
+        };
+        let at = save_payslip_snapshot_impl(&conn, &snap).unwrap();
+        assert!(!at.is_empty());
+        let list = payslip_snapshots_impl(&conn, Some("2026-10".into())).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["rate"], 8.5);
+        assert_eq!(list[0]["p_work"], 45.0);
+        assert_eq!(list[0]["share_risk"], 1000.0);
+        assert_eq!(list[0]["net"], 4404.0);
+        // النسخة المجمّدة من القسيمة تُحفظ وتُرجع كما هي (للطباعة المطابقة لاحقاً)
+        assert_eq!(list[0]["enabled"], true);
+        assert_eq!(
+            list[0]["sheet"].as_str(),
+            Some(r#"{"period":"2026-10","net":4404}"#),
+            "النسخة المجمّدة يجب أن تُحفظ حرفياً"
+        );
+        // طباعة/دفع ثانٍ بإعدادات جديدة يستبدل اللقطة لا يضيف ثانية
+        let snap2 = PayslipSnapshot {
+            rate: 9.5,
+            p_work: 50.0,
+            p_risk: 40.0,
+            p_bonus: 10.0,
+            enabled: false, // تقسيم ملغٍ وقتها
+            sheet: None,
+            ..snap
+        };
+        save_payslip_snapshot_impl(&conn, &snap2).unwrap();
+        let list = payslip_snapshots_impl(&conn, Some("2026-10".into())).unwrap();
+        assert_eq!(list.len(), 1, "لقطة واحدة لكل (موظف، شهر)");
+        assert_eq!(list[0]["rate"], 9.5);
+        assert_eq!(list[0]["p_work"], 50.0);
+        assert_eq!(list[0]["p_risk"], 40.0);
+        assert_eq!(list[0]["enabled"], false, "علم «ملغٍ» يُستبدل مع اللقطة");
+        assert!(
+            list[0]["sheet"].is_null(),
+            "النسخة السابقة تُمحَّد عند استبدال اللقطة"
+        );
+        // شهر آخر مستقل
+        let snap3 = PayslipSnapshot {
+            period: "2026-11".into(),
+            ..snap2
+        };
+        save_payslip_snapshot_impl(&conn, &snap3).unwrap();
+        assert_eq!(
+            payslip_snapshots_impl(&conn, None).unwrap().len(),
+            2,
+            "بلا فلتر: كل اللقطات"
+        );
     }
 }

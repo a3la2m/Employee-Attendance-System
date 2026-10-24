@@ -49,6 +49,23 @@ export const printCss = `
 .pay-slip { display: none; }
 /* عرض القسيمة داخل نافذة المعاينة على الشاشة (تبقى مخفية في الطباعة العادية) */
 .slip-overlay .pay-slip { display: block; }
+/* ورقة طباعة حركات موظف (تُطبع من نافذة الحركات بزر «طباعة الحركات») */
+.punches-sheet { display: none; }
+/* ورقة قسيمة دفعة مجمّدة — تُطبع وحدها بزر «طباعة كما كانت وقت الدفع» */
+.frozen-sheet { display: none; }
+
+/* قسيمة الراتب: نسخة مضغوطة تكفي صفحة واحدة (A4) */
+.pay-slip .report-table { margin-top: 6px; }
+.pay-slip .report-table th { padding: 4px; font-size: 11px; }
+.pay-slip .report-table td { padding: 3px 4px; font-size: 11.5px; }
+/* صف إجمالي فرعي (الراتب الأساسي المجمّع) */
+.pay-slip .report-table .subtotal-row td {
+  background: #f8fafc; border-top: 2px solid #475569; font-weight: 800;
+}
+/* جدول الأيام مقسوماً إلى نصفين جنباً إلى جنب: أعمدة ثابتة وخط أصغر */
+.pay-slip .slip-days { table-layout: fixed; }
+.pay-slip .slip-days th, .pay-slip .slip-days td { padding: 2px 3px; font-size: 10.5px; }
+.pay-slip .slip-days td span { font-size: 10px; }
 
 @page { size: A4; margin: 12mm; }
 
@@ -56,10 +73,18 @@ export const printCss = `
   body { background: #fff !important; }
   .print\\:hidden { display: none !important; }
   main { overflow: visible !important; }
+  /* الشريط الجانبي لا يُطبع في أي مطبوعة */
+  aside { display: none !important; }
   .report-sheet { box-shadow: none !important; max-width: none !important; padding: 0 !important; }
   .report-table thead { display: table-header-group; }
   /* وضع قسيمة الراتب: تُطبع القسيمة وحدها */
   body.print-slip .pay-main { display: none !important; }
   body.print-slip .pay-slip { display: block !important; }
+  /* وضع طباعة حركات موظف: تُطبع الورقة وحدها */
+  body.print-punches main { display: none !important; }
+  body.print-punches .punches-sheet { display: block !important; }
+  /* وضع طباعة قسيمة دفعة مجمّدة: تُطبع الورقة وحدها (كما كانت وقت الدفع) */
+  body.print-frozen main { display: none !important; }
+  body.print-frozen .frozen-sheet { display: block !important; }
 }
 `;

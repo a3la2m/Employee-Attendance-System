@@ -23,6 +23,9 @@ pub trait DeviceBackend {
     fn get_time_iso(&mut self) -> anyhow::Result<String>;
     /// محاولة إضافة موظف إلى الجهاز (تعمل عبر DLL؛ عبر البروتوكول قد تُرفض).
     fn add_user(&mut self, pin: &str, name: &str) -> anyhow::Result<()>;
+    /// تعديل صلاحية مستخدم قائم على الجهاز: 0 = عادي، 6 = مدير، 14 = أدمن
+    /// كامل (سوبر أدمن) — يحافظ على اسمه وبطاقته وبصماته كما هي.
+    fn set_user_privilege(&mut self, pin: &str, privilege: i64) -> anyhow::Result<()>;
     /// حذف مستخدم من الجهاز = تعطيله عن البصمات حسب رقم البصمة.
     fn delete_user(&mut self, pin: &str) -> anyhow::Result<()>;
     fn close(&mut self);

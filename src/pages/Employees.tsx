@@ -1,20 +1,32 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Modal from "../components/Modal";
+import { PrintHeader, PrintFooter } from "../components/PrintChrome";
 import {
   listEmployees,
   upsertEmployee,
   deleteEmployee,
   getSettings,
+  readLogoDataUri,
   pushUserToDevice,
   disableUserOnDevice,
+  setDevicePrivilege,
+  getNextDevicePin,
   employeePunches,
   listLeaves,
   addLeave,
   deleteLeave,
+  holidaysList,
+  assignCompOff,
+  listShifts,
+  reassignShiftRecompute,
 } from "../lib/api";
 import type { PunchRow } from "../lib/api";
 import { translitArabic } from "../lib/translit";
-import type { Employee, Leave } from "../lib/types";
+import { printCss, todayISO } from "../lib/print";
+import { pairPunches, fmtDur } from "../lib/punchPairs";
+import type { PunchPairRow } from "../lib/punchPairs";
+import type { Employee, Leave, Holiday, Shift, Settings } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
 
@@ -38,6 +50,8 @@ const EMPTY: Employee = {
   annual_leave_balance: 0,
   annual_leave_days: 14,
   leave_accrual_month: null,
+  shift_id: null,
+  device_privilege: 0,
 };
 
 // نوع الحركة كما يسجلها الجهاز (0=دخول 1=خروج …)
@@ -50,14 +64,27 @@ const PUNCH_LABELS: Record<number, string> = {
   5: "إضافي (خروج)",
 };
 
+/** لصق صلاحية الجهاز بالعربية (تُعرض في رسائل الحفظ وشاشات العرض). */
+const privLabel = (p: number) =>
+  p === 14 ? "سوبر أدمن (أدمن كامل)" : p === 6 ? "مدير" : "مستخدم عادي";
+
+/** الشهر الحالي: [أوله، آخره] — يملأ نطاق حركات الموظف تلقائياً. */
+const curMonth = (): [string, string] => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const last = new Date(y, d.getMonth() + 1, 0).getDate();
+  return [`${y}-${m}-01`, `${y}-${m}-${String(last).padStart(2, "0")}`];
+};
+
 export default function Employees({ toast }: { toast: Toast }) {
   const [rows, setRows] = useState<Employee[]>([]);
   const [form, setForm] = useState<Employee | null>(null);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<"all" | "active" | "inactive">("all");
   const [cur, setCur] = useState("ILS");
-  const [busyPush, setBusyPush] = useState(false);
   const [viewEmp, setViewEmp] = useState<Employee | null>(null);
+  const [shifts, setShifts] = useState<Shift[]>([]);
   // آخر قيمة لاتينية ولّدها التطبيق من الاسم العربي (لتعرف إن عدّلها المستخدم)
   const lastAutoEn = useRef("");
   // هل لمس المستخدم حقل الاسم الإنجليزي يدوياً؟ (يتوقف التوليد التلقائي بعده)
@@ -73,6 +100,7 @@ export default function Employees({ toast }: { toast: Toast }) {
     getSettings()
       .then((s) => setCur(s.currency || "ILS"))
       .catch(() => {});
+    listShifts().then(setShifts).catch(() => {});
   }, []);
 
   const curSym = cur === "USD" ? "$" : cur === "JOD" ? "د.أ" : "₪";
@@ -81,17 +109,23 @@ export default function Employees({ toast }: { toast: Toast }) {
   const openForm = (emp?: Employee) => {
     lastAutoEn.current = "";
     enTouched.current = false;
-    setForm(emp ? { ...emp } : { ...EMPTY });
+    if (emp) {
+      enTouched.current = true;
+      setForm({ ...emp, name_en: emp.name_en ?? "" });
+      lastAutoEn.current = translitArabic(emp.name);
+    } else {
+      setForm({ ...EMPTY, daily_hours: 8.5, break_min: 30, shift_id: null });
+      // تعبئة رقم البصمة تلقائياً (أعلى رقم معروف + 1) — بلا زر ولا خطوة يدوية
+      suggestNextPin();
+    }
   };
 
-  // كتابة الاسم العربي: يولّد اقتراحاً لاتينياً فقط عند إضافة موظف جديد ما دام
-  // المستخدم لم يلمس الحقل الإنجليزي — لا يمسّ حقل موظف قائم إطلاقاً.
+  // كتابة الاسم العربي: يولّد اقتراحاً لاتينياً بعد توقف الكتابة أو عند الخروج من الحقل
   const setName = (name: string) => {
     const auto = translitArabic(name);
     setForm((f) => {
       if (!f) return f;
       const canAuto =
-        !f.id &&
         !enTouched.current &&
         (!f.name_en || f.name_en === lastAutoEn.current);
       return { ...f, name, name_en: canAuto ? auto : f.name_en };
@@ -99,67 +133,142 @@ export default function Employees({ toast }: { toast: Toast }) {
     lastAutoEn.current = auto;
   };
 
+  // توليد تلقائي عند الخروج من حقل الاسم العربي (مع تأخير خفيف لضمان تحديث القيمة)
+  const autoGenEnOnBlur = () => {
+    setForm((f) => {
+      if (!f || enTouched.current) return f;
+      const auto = translitArabic(f.name);
+      if (!auto.trim()) return f;
+      if (f.name_en && f.name_en !== lastAutoEn.current) return f;
+      lastAutoEn.current = auto;
+      return { ...f, name_en: auto };
+    });
+  };
+
   // توليد يدوي صريح من زر 🔄 (يعمل للإضافة والتعديل معاً)
   const genEn = () => {
     if (!form) return;
+    enTouched.current = false;
     const auto = translitArabic(form.name);
     lastAutoEn.current = auto;
     setForm({ ...form, name_en: auto });
   };
 
-  // إرسال الاسم اللاتيني إلى الجهاز فعلياً (الجهاز لا يدعم العربية)
-  const pushToDevice = async (emp: Employee) => {
-    const pin = (emp.pin ?? "").trim();
-    const devName = (emp.name_en || "").trim() || translitArabic(emp.name);
-    if (!pin) return toast("أدخل رقم البصمة أولاً", "err");
-    if (!devName) return toast("لا يوجد اسم لاتيني للإرسال", "err");
-    setBusyPush(true);
-    try {
-      const msg = await pushUserToDevice(pin, devName);
-      toast(msg, "ok");
-    } catch (e) {
-      toast(String(e), "err");
-    } finally {
-      setBusyPush(false);
-    }
+  /** تعبئة رقم البصمة لموظف جديد تلقائياً: أعلى رقم على الجهاز أو في البرنامج
+   * + 1 (مثال: آخر رقم 30 ← يُملأ 31). تحديث وظيفي يتجاهل أي تعديل يدوي. */
+  const suggestNextPin = () => {
+    getNextDevicePin()
+      .then((p) => {
+        if (!p) return;
+        setForm((f) => (f && !f.id ? { ...f, pin: p } : f));
+      })
+      .catch(() => {});
   };
+
+  // إرسال الاسم اللاتيني إلى الجهاز يجري تلقائياً عند الحفظ (بلا زر منفصل)
 
   const save = async () => {
     if (!form) return;
     if (!form.name.trim()) return toast("الاسم مطلوب", "err");
+    const prev = rows.find((r) => r.id === form.id);
+    const prevShift = prev?.shift_id ?? null;
+    const shiftChanged = form.id > 0 && prevShift !== form.shift_id;
+    const prevActive = prev ? prev.active : true; // الموظف الجديد يُعامَل كنشط
+    const prevPriv = prev?.device_privilege ?? 0;
+    const reactivated = form.id > 0 && !prevActive && form.active;
+    // إيقاف موظف نشط: تأكيد «نعم/لا» قبل أي حفظ — يشرح أثره على جهاز البصمة
+    if (form.id > 0 && prevActive && !form.active) {
+      const ok = window.confirm(
+        `إيقاف الموظف «${form.name}» سيحذف بصمه من جهاز البصمة فلا يعود يُبصم.\n` +
+          `سجل حضوره السابق يبقى كاملاً في البرنامج.\n` +
+          `وعند إعادة تفعيله لاحقاً يجب إعادة تعريفه على الجهاز وتسجيل بصماته من جديد.\n\n` +
+          `هل تريد المتابعة؟`,
+      );
+      if (!ok) return; // إلغاء: لا حفظ محلي ولا أي تعديل على الجهاز
+    }
     try {
       await upsertEmployee(form);
-      // عند الحفظ يُرسل الاسم إلى الجهاز مباشرة إن توفر اتصال
+      // عند الحفظ يُرسل الموظف إلى الجهاز تلقائياً (إن توفر اتصال)
       const pin = (form.pin ?? "").trim();
       const devName =
         (form.name_en || "").trim() || translitArabic(form.name).trim();
       let pushed = false;
-      let deactivated = false;
-      let pushErr = "";
+      let suspended: "" | "removed" | "absent" = "";
+      let privApplied = false;
+      let errNote = "";
       if (pin && devName && form.active) {
         try {
           await pushUserToDevice(pin, devName);
           pushed = true;
         } catch (e2) {
-          pushErr = String(e2);
+          errNote = `تعذّر إرساله إلى الجهاز: ${e2}`;
+        }
+        // صلاحية الجهاز (سوبر أدمن/مدير): تُرسل عند تغييرها فقط — لا تمسّ البصمات،
+        // وكذلك بعد إعادة التفعيل (الحذف من الجهاز يُسقط الامتياز القديم)
+        if (
+          pushed &&
+          (form.device_privilege !== prevPriv ||
+            (reactivated && form.device_privilege > 0))
+        ) {
+          try {
+            await setDevicePrivilege(pin, form.device_privilege);
+            privApplied = true;
+          } catch (e2) {
+            errNote += `${errNote ? " — " : ""}تعذّر تحديث صلاحيته على الجهاز: ${e2}`;
+          }
         }
       } else if (pin && !form.active) {
-        // إيقاف الموظف = حذفه من الجهاز أيضاً حتى لا يبقى يبصم عليه
+        // إيقاف على الجهاز: «removed» = حُذف سجله الآن، «absent» = غير موجود أصلاً
         try {
           await disableUserOnDevice(pin);
-          deactivated = true;
+          suspended = "removed";
         } catch (e2) {
-          // «غير موجود» = كان معطّلاً أصلاً على الجهاز — ليس خطأ
-          if (String(e2).includes("غير موجود")) deactivated = true;
-          else pushErr = String(e2);
+          if (String(e2).includes("غير موجود")) suspended = "absent";
+          else errNote = `تعذّر إيقافه على الجهاز: ${e2}`;
         }
       }
-      if (pushed) toast("حُفظ الموظف وأُرسل اسمه إلى الجهاز");
-      else if (deactivated)
-        toast("حُفظ الموظف وأُوقف على جهاز البصمة — لم يعد يقبل بصمته");
-      else if (pushErr)
-        toast(`حُفظ الموظف — لكن تعذّر تحديث الجهاز: ${pushErr}`, "err");
-      else toast(form.id ? "تم تحديث الموظف" : "تمت إضافة الموظف");
+      // تغيّرت الوردية؟ أعد احتساب حضوره (آخر ٦٠ يوماً) ليُطبَّق التوقيت الجديد.
+      if (shiftChanged) {
+        const today = new Date();
+        const from = new Date(today.getTime() - 60 * 86400000)
+          .toISOString()
+          .slice(0, 10);
+        const to = today.toISOString().slice(0, 10);
+        try {
+          await reassignShiftRecompute(from, to);
+          toast("حُفظ الموظف وأُعيد احتساب حضوره حسب الوردية الجديدة ✅", "ok");
+          setForm(null);
+          load();
+          return;
+        } catch (e2) {
+          toast(`حُفظ الموظف — لكن تعذّر إعادة الاحتساب: ${String(e2)}`, "err");
+          setForm(null);
+          load();
+          return;
+        }
+      }
+      if (errNote) {
+        toast(`حُفظ الموظف محلياً — لكن ${errNote}`, "err");
+      } else {
+        const msgs: string[] = [];
+        if (suspended === "removed")
+          msgs.push(
+            prevActive
+              ? "أُوقف على جهاز البصمة (حُذف سجله منه — لم يعد يُبصم) ✅"
+              : "أُزيل من جهاز البصمة الآن (كان موقوفاً في البرنامج فقط) ✅",
+          );
+        else if (suspended === "absent")
+          msgs.push("موقوف — وغير موجود على جهاز البصمة ✔");
+        else if (reactivated && pushed)
+          msgs.push(
+            "أُعيد تعريفه على الجهاز — سجّل بصماته من جديد على الجهاز 🔁",
+          );
+        else if (pushed) msgs.push("أُرسل إلى الجهاز تلقائياً");
+        if (privApplied)
+          msgs.push(`الصلاحية على الجهاز: ${privLabel(form.device_privilege)} 👑`);
+        if (msgs.length) toast(`حُفظ الموظف — ${msgs.join(" · ")}`);
+        else toast(form.id ? "تم تحديث الموظف" : "تمت إضافة الموظف");
+      }
       setForm(null);
       load();
     } catch (e) {
@@ -246,6 +355,12 @@ export default function Employees({ toast }: { toast: Toast }) {
                   className="input"
                   value={form.name}
                   onChange={(e) => setName(e.target.value)}
+                  onBlur={autoGenEnOnBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === "Tab") {
+                      setTimeout(autoGenEnOnBlur, 50);
+                    }
+                  }}
                 />
               </div>
               <div>
@@ -282,9 +397,13 @@ export default function Employees({ toast }: { toast: Toast }) {
                   className="input text-left"
                   dir="ltr"
                   value={form.pin ?? ""}
-                  placeholder="مثال: 9"
+                  placeholder="يُملأ تلقائياً: أعلى رقم معروف + 1"
                   onChange={(e) => setForm({ ...form, pin: e.target.value })}
                 />
+                <div className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                  يُعبَّأ وحده عند فتح «+ موظف جديد» بأعلى رقم موجود على الجهاز
+                  أو في البرنامج + 1 — ويمكن تعديله يدوياً.
+                </div>
               </div>
               <div>
                 <label className="label">الوظيفة</label>
@@ -306,30 +425,56 @@ export default function Employees({ toast }: { toast: Toast }) {
                 />
               </div>
               <div>
-                <label className="label">ساعات العمل اليومية</label>
-                <input
-                  type="number"
-                  step="0.25"
-                  className="input text-left"
-                  dir="ltr"
-                  value={form.daily_hours}
+                <label className="label">الوردية (ساعات الدوام)</label>
+                <select
+                  className="input"
+                  value={form.shift_id ?? ""}
                   onChange={(e) =>
-                    setForm({ ...form, daily_hours: Number(e.target.value) })
+                    setForm({
+                      ...form,
+                      shift_id: e.target.value ? Number(e.target.value) : null,
+                    })
                   }
-                />
+                >
+                  <option value="">
+                    — الوردية الرئيسية (الافتراضية) —
+                  </option>
+                  {shifts
+                    .filter((s) => s.active || s.id === form.shift_id)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} · {s.work_start}–{s.work_end}
+                        {s.is_default ? " ⭐" : ""}
+                        {!s.active ? " (مهجورة)" : ""}
+                      </option>
+                    ))}
+                </select>
+                <p className="text-xs text-slate-500 mt-1">
+                  تحدّد الوردية بداية/نهاية الدوام والساعات والاستراحة المحتسبة.
+                </p>
               </div>
               <div>
-                <label className="label">الاستراحة (دقيقة)</label>
-                <input
-                  type="number"
-                  className="input text-left"
-                  dir="ltr"
-                  value={form.break_min}
+                <label className="label">👑 صلاحية على جهاز البصمة</label>
+                <select
+                  className="input"
+                  value={form.device_privilege}
                   onChange={(e) =>
-                    setForm({ ...form, break_min: Number(e.target.value) })
+                    setForm({
+                      ...form,
+                      device_privilege: Number(e.target.value),
+                    })
                   }
-                />
+                >
+                  <option value={0}>مستخدم عادي (يُبصم فقط)</option>
+                  <option value={6}>مدير — Manager</option>
+                  <option value={14}>أدمن كامل (سوبر أدمن) — Admin</option>
+                </select>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  تُرسل إلى الجهاز عند الحفظ — الأدمن يفتح قوائم إعدادات الجهاز
+                  بإدخال بصمته. لا تغيير في الصلاحية يمسّ بصماته.
+                </p>
               </div>
+              {/* ساعات العمل والاستراحة مأخوذة من الوردية المسنَدة */}
               <div>
                 <label className="label">سعر الساعة ({curSym})</label>
                 <input
@@ -515,18 +660,10 @@ export default function Employees({ toast }: { toast: Toast }) {
             </div>
 
             <div className="flex items-center gap-2 mt-5 justify-end">
-              <button
-                className="btn-ghost"
-                onClick={() => pushToDevice(form)}
-                disabled={busyPush || !form.active}
-                title={
-                  form.active
-                    ? "يحدّث اسم الموظف على الجهاز ليدخل عند البصم"
-                    : "الموظف موقوف — لن يُعاد إلى الجهاز قبل تفعيله"
-                }
-              >
-                {busyPush ? "جارٍ الإرسال…" : "📤 إرسال الاسم إلى الجهاز"}
-              </button>
+              <span className="text-xs text-slate-500 mr-auto">
+                💡 يُرسَل الموظف إلى جهاز البصمة تلقائياً عند الحفظ (لا حاجة لزر
+                إرسال منفصل).
+              </span>
               <button className="btn-ghost" onClick={() => setForm(null)}>
                 إلغاء
               </button>
@@ -544,6 +681,7 @@ export default function Employees({ toast }: { toast: Toast }) {
             <tr>
               <th className="th">الاسم</th>
               <th className="th">رقم البصمة</th>
+              <th className="th">صلاحية الجهاز</th>
               <th className="th">الوظيفة</th>
               <th className="th">ساعات/يوم</th>
               <th className="th">سعر الساعة</th>
@@ -554,7 +692,7 @@ export default function Employees({ toast }: { toast: Toast }) {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td className="td text-center text-slate-400 py-8" colSpan={7}>
+                <td className="td text-center text-slate-400 py-8" colSpan={8}>
                   لا يوجد موظفون — اضغط «+ موظف جديد» أو اسحب من الجهاز.
                 </td>
               </tr>
@@ -562,7 +700,11 @@ export default function Employees({ toast }: { toast: Toast }) {
             {filtered.map((r) => (
               <tr
                 key={r.id}
-                className={`hover:bg-slate-50 ${r.active ? "" : "opacity-60"}`}
+                className={`hover:bg-slate-50 cursor-pointer ${
+                  r.active ? "" : "opacity-60"
+                }`}
+                onClick={() => setViewEmp(r)}
+                title="عرض حركات الموظف"
               >
                 <td className="td font-medium">
                   {r.name}
@@ -573,6 +715,25 @@ export default function Employees({ toast }: { toast: Toast }) {
                   )}
                 </td>
                 <td className="td font-mono">{r.pin || "—"}</td>
+                <td className="td">
+                  {/* صلاحيته الفعلية على جهاز البصمة (تُحدَّث مع كل سحب من الجهاز) */}
+                  {r.device_privilege > 0 ? (
+                    <span
+                      className={`badge ${
+                        r.device_privilege === 14
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-indigo-100 text-indigo-700"
+                      }`}
+                      title={`صلاحية ${privLabel(r.device_privilege)} على جهاز البصمة`}
+                    >
+                      👑 {privLabel(r.device_privilege)}
+                    </span>
+                  ) : (
+                    <span className="text-slate-300" title="مستخدم عادي على الجهاز">
+                      —
+                    </span>
+                  )}
+                </td>
                 <td className="td">{r.job_title || "—"}</td>
                 <td className="td">{r.daily_hours}</td>
                 <td className="td">{r.hourly_rate}</td>
@@ -598,13 +759,19 @@ export default function Employees({ toast }: { toast: Toast }) {
                     </button>
                     <button
                       className="text-indigo-600 hover:underline text-xs"
-                      onClick={() => openForm(r)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openForm(r);
+                      }}
                     >
                       تعديل
                     </button>
                     <button
                       className="text-rose-600 hover:underline text-xs"
-                      onClick={() => remove(r)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        remove(r);
+                      }}
                     >
                       حذف
                     </button>
@@ -633,6 +800,7 @@ export default function Employees({ toast }: { toast: Toast }) {
 const LEAVE_LABELS: Record<string, string> = {
   annual: "إجازة سنوية",
   sick: "إجازة مرضية",
+  comp: "عطلة تعويضية (يوم بدل)",
 };
 
 /** عدد أيام المدى [من، إلى] بما فيه اليومان (0 إن كان التاريخ غير صالح). */
@@ -656,12 +824,18 @@ function PunchesModal({
   /** يُستدعى بعد تغيير الإجازات لتحديث قائمة الموظفين (الرصيد في الجدول). */
   onChanged?: () => void;
 }) {
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  // نطاق تلقائي: من أول الشهر الحالي إلى آخره (قابل للتغيير يدوياً)
+  const [from, setFrom] = useState(() => curMonth()[0]);
+  const [to, setTo] = useState(() => curMonth()[1]);
   const [qtime, setQtime] = useState(""); // بحث بالوقت HH:MM أو جزء التاريخ
+  // العرض المدمج (الافتراضي): كل دخول مع خروجه في صف واحد + المدة بينهما
+  const [grouped, setGrouped] = useState(true);
   const [punches, setPunches] = useState<PunchRow[]>([]);
   const [leaves, setLeaves] = useState<Leave[]>([]);
   const [busy, setBusy] = useState(false);
+  // لترويسة الطباعة: نص الشركة وشعارها
+  const [cfg, setCfg] = useState<Settings>({});
+  const [logo, setLogo] = useState("");
 
   // رصيد الإجازات السنوية (يتحدث محلياً فورياً بعد تسجيل/حذف إجازة سنوية)
   const [balance, setBalance] = useState(emp.annual_leave_balance);
@@ -672,6 +846,13 @@ function PunchesModal({
   const [lvTo, setLvTo] = useState("");
   const [lvNote, setLvNote] = useState("");
   const [lvBusy, setLvBusy] = useState(false);
+
+  // «يوم بدل»: عطلة رسمية دوّم فيها الموظف → عطلة تعويضية في تاريخ آخر
+  const [holidays, setHolidays] = useState<Holiday[]>([]);
+  const [compOpen, setCompOpen] = useState(false);
+  const [compHoliday, setCompHoliday] = useState("");
+  const [compDate, setCompDate] = useState("");
+  const [compBusy, setCompBusy] = useState(false);
 
   // جلب كامل بلا فلاتر — والترشيح يتم فورياً داخل الواجهة
   const load = async () => {
@@ -693,8 +874,45 @@ function PunchesModal({
   useEffect(() => {
     load();
     reloadLeaves();
+    holidaysList().then(setHolidays).catch(() => {});
+    getSettings()
+      .then((s) => {
+        setCfg(s);
+        if (s.company_logo) {
+          readLogoDataUri(s.company_logo)
+            .then(setLogo)
+            .catch(() => setLogo(""));
+        }
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** إسناد «يوم بدل» عن دوام الموظف في عطلة رسمية. */
+  const assignComp = async () => {
+    if (!compHoliday) {
+      toast("اختر يوم العطلة الرسمية التي دوّم فيها", "err");
+      return;
+    }
+    if (!compDate) {
+      toast("اختر تاريخ يوم البدل", "err");
+      return;
+    }
+    setCompBusy(true);
+    try {
+      await assignCompOff(emp.id, compHoliday, compDate);
+      toast(`أُسند يوم بدل بتاريخ ${compDate} ✅`);
+      setCompOpen(false);
+      setCompHoliday("");
+      setCompDate("");
+      reloadLeaves();
+      onChanged?.();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setCompBusy(false);
+    }
+  };
 
   /** تسجيل إجازة جديدة (السنوية تُخصم من الرصيد). */
   const saveLeave = async () => {
@@ -760,7 +978,38 @@ function PunchesModal({
     ? punches[0].device_time.slice(0, 10)
     : "—";
 
+  // دمج الحركات المعروضة: كل دخول مع خروجه في صف واحد + المدة بينهما (لكل يوم)
+  const pairs = pairPunches(shown);
+  const totalMin = pairs.reduce((s, r) => s + (r.minutes ?? 0), 0);
+
+  /** وصف صف المدمج: ينبه للحالات الشاذة وللأنواع غير القياسية (استراحة/إضافي). */
+  const pairNote = (r: PunchPairRow) => {
+    if (!r.inTime) return "⚠️ خروج بلا دخول";
+    if (!r.outTime) return "⚠️ دخول بلا خروج";
+    if (r.inType !== 0 || r.outType !== 1)
+      return `${PUNCH_LABELS[r.inType ?? -1] ?? "؟"} ← ${
+        PUNCH_LABELS[r.outType ?? -1] ?? "؟"
+      }`;
+    return "—";
+  };
+
+  /** طباعة الحركات المعروضة (ضمن الترشيح) بترويسة الشركة وتذييلها. */
+  const printPunches = () => {
+    if (shown.length === 0) {
+      toast("لا حركات ضمن الترشيح الحالي — عدّل الفترة أو امسح الترشيح", "err");
+      return;
+    }
+    document.body.classList.add("print-punches");
+    try {
+      window.print();
+    } finally {
+      document.body.classList.remove("print-punches");
+    }
+  };
+
   return (
+    <>
+    <style>{printCss}</style>
     <Modal
       onClose={onClose}
       title={
@@ -776,6 +1025,11 @@ function PunchesModal({
             {" "}
             (رقم {emp.pin || "—"})
           </span>
+          {emp.device_privilege > 0 && (
+            <span className="badge bg-amber-100 text-amber-700 mr-2 align-middle">
+              👑 {privLabel(emp.device_privilege)} على جهاز البصمة
+            </span>
+          )}
         </span>
       }
       panelClass="max-w-3xl"
@@ -814,6 +1068,22 @@ function PunchesModal({
           <button className="btn-primary" onClick={load} disabled={busy}>
             {busy ? "جارٍ…" : "🔄 تحديث"}
           </button>
+          <button className="btn-ghost" onClick={printPunches}>
+            🖨️ طباعة الحركات
+          </button>
+          <button
+            className={`btn-ghost ${
+              grouped ? "!bg-indigo-100 !text-indigo-700 !border !border-indigo-300" : ""
+            }`}
+            onClick={() => setGrouped((g) => !g)}
+            title={
+              grouped
+                ? "إلغاء الدمج: عرض كل حركة على حدة كما سجّلها الجهاز"
+                : "دمج كل دخول مع خروجه في صف واحد ويظهر عدد الساعات بينهما"
+            }
+          >
+            {grouped ? "🔗 دخول/خروج مدموج" : "🔗 دمج دخول/خروج"}
+          </button>
           {filtersOn && (
             <button
               className="btn-ghost"
@@ -843,54 +1113,92 @@ function PunchesModal({
         )}
 
         <div className="text-xs text-slate-500 mb-2">
-          المعروض: {shown.length} من {punches.length}
+          المعروض: {shown.length} حركة من {punches.length}
+          {grouped && (
+            <>
+              {" "}
+              — {pairs.length} صف دخول/خروج · إجمالي المدة:{" "}
+              <b>{fmtDur(totalMin)}</b>
+            </>
+          )}
         </div>
 
         <div className="overflow-auto max-h-80 border border-slate-200 rounded-lg">
           <table className="w-full">
             <thead className="sticky top-0">
-              <tr>
-                <th className="th">التاريخ</th>
-                <th className="th">الوقت</th>
-                <th className="th">النوع</th>
-                <th className="th">رمز الجهاز</th>
-              </tr>
+              {grouped ? (
+                <tr>
+                  <th className="th">#</th>
+                  <th className="th">التاريخ</th>
+                  <th className="th">الدخول</th>
+                  <th className="th">الخروج</th>
+                  <th className="th">المدة</th>
+                  <th className="th">ملاحظة</th>
+                </tr>
+              ) : (
+                <tr>
+                  <th className="th">التاريخ</th>
+                  <th className="th">الوقت</th>
+                  <th className="th">النوع</th>
+                  <th className="th">رمز الجهاز</th>
+                </tr>
+              )}
             </thead>
             <tbody>
               {shown.length === 0 && (
                 <tr>
-                  <td className="td text-center text-slate-400 py-6" colSpan={4}>
+                  <td className="td text-center text-slate-400 py-6" colSpan={6}>
                     لا حركات ضمن هذا الترشيح.
                   </td>
                 </tr>
               )}
-              {shown.map((p, i) => {
-                const [d, t] = p.device_time.split("T");
-                const label =
-                  PUNCH_LABELS[p.punch_type] ?? `نوع ${p.punch_type}`;
-                // اتجاه الدخول: حضور/عودة من استراحة/دخول إضافي
-                const isIn = [0, 3, 4].includes(p.punch_type);
-                return (
+              {grouped &&
+                pairs.map((r, i) => (
                   <tr key={i} className="hover:bg-slate-50">
-                    <td className="td font-mono">{d}</td>
-                    <td className="td font-mono">{(t ?? "").slice(0, 8)}</td>
-                    <td className="td">
-                      <span
-                        className={`badge ${
-                          isIn
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-sky-100 text-sky-700"
-                        }`}
-                      >
-                        {label}
-                      </span>
-                    </td>
-                    <td className="td text-xs text-slate-400 font-mono">
-                      {p.raw_status}/{p.work_code}
+                    <td className="td text-slate-400">{i + 1}</td>
+                    <td className="td font-mono">{r.date}</td>
+                    <td className="td font-mono">{r.inTime ?? "—"}</td>
+                    <td className="td font-mono">{r.outTime ?? "—"}</td>
+                    <td className="td font-bold">{fmtDur(r.minutes)}</td>
+                    <td
+                      className={`td text-xs ${
+                        r.inTime && r.outTime
+                          ? "text-slate-500"
+                          : "text-amber-600 font-bold"
+                      }`}
+                    >
+                      {pairNote(r)}
                     </td>
                   </tr>
-                );
-              })}
+                ))}
+              {!grouped &&
+                shown.map((p, i) => {
+                  const [d, t] = p.device_time.split("T");
+                  const label =
+                    PUNCH_LABELS[p.punch_type] ?? `نوع ${p.punch_type}`;
+                  // اتجاه الدخول: حضور/عودة من استراحة/دخول إضافي
+                  const isIn = [0, 3, 4].includes(p.punch_type);
+                  return (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="td font-mono">{d}</td>
+                      <td className="td font-mono">{(t ?? "").slice(0, 8)}</td>
+                      <td className="td">
+                        <span
+                          className={`badge ${
+                            isIn
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-sky-100 text-sky-700"
+                          }`}
+                        >
+                          {label}
+                        </span>
+                      </td>
+                      <td className="td text-xs text-slate-400 font-mono">
+                        {p.raw_status}/{p.work_code}
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </div>
@@ -1016,6 +1324,170 @@ function PunchesModal({
             ))}
           </ul>
         )}
+
+        {/* يوم بدل: عطلة تعويضية عن دوام في عطلة رسمية */}
+        <div className="mt-5 pt-4 border-t border-slate-200">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold">🎁 يوم بدل (عطلة تعويضية)</h3>
+            <button
+              className="btn-ghost !py-1 !px-2 text-xs"
+              onClick={() => setCompOpen((o) => !o)}
+            >
+              {compOpen ? "إخفاء" : "➕ إسناد يوم بدل"}
+            </button>
+          </div>
+          <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+            إن دوّم الموظف في <b>عطلة رسمية</b>، يمكن منحه يوماً بديلاً إجازةً مدفوعة
+            بأجر يوم العطلة (62) — ويمكن أن يكون في الشهر التالي. يُحتسب ذلك في الراتب
+            كـ«عطلة تعويضية».
+          </p>
+          {compOpen && (
+            <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2 text-sm mt-2">
+              <div className="grid sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="label">العطلة الرسمية التي دوّم فيها</label>
+                  <select
+                    className="input"
+                    value={compHoliday}
+                    onChange={(e) => setCompHoliday(e.target.value)}
+                  >
+                    <option value="">— اختر —</option>
+                    {holidays.map((h) => (
+                      <option key={h.id} value={h.date}>
+                        {h.date} — {h.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="label">تاريخ يوم البدل</label>
+                  <input
+                    type="date"
+                    className="input"
+                    value={compDate}
+                    onChange={(e) => setCompDate(e.target.value)}
+                  />
+                </div>
+              </div>
+              {holidays.length === 0 && (
+                <p className="text-xs text-amber-600">
+                  لا توجد إجازات رسمية مسجّلة — أضفها من الإعدادات أولاً.
+                </p>
+              )}
+              <div className="flex justify-end">
+                <button
+                  className="btn-primary"
+                  onClick={assignComp}
+                  disabled={compBusy || !compHoliday || !compDate}
+                >
+                  {compBusy ? "جارٍ الإسناد…" : "🎁 إسناد يوم البدل"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
     </Modal>
+
+    {/* ===== ورقة طباعة الحركات (تُطبع بزر «طباعة الحركات» — مخفية على الشاشة) ===== */}
+    {createPortal(
+      <div className="punches-sheet report-sheet p-8">
+        <PrintHeader
+          cfg={cfg}
+          logo={logo}
+          title={`حركات موظف — ${emp.name}`}
+          meta={
+            <>
+              <div className="text-slate-600">
+                رقم البصمة: {emp.pin || "—"}
+                {emp.job_title ? ` · ${emp.job_title}` : ""}
+              </div>
+              <div className="text-slate-600">
+                الفترة: {from || "الكل"} ← {to || "الكل"} ·{" "}
+                {grouped
+                  ? `صفوف دخول/خروج: ${pairs.length} · إجمالي المدة: ${fmtDur(
+                      totalMin,
+                    )}`
+                  : `عدد الحركات: ${shown.length}`}
+              </div>
+              <div className="text-slate-500 text-xs">
+                تاريخ الطباعة: {todayISO()}
+              </div>
+            </>
+          }
+        />
+        <table className="report-table">
+          <thead>
+            {grouped ? (
+              <tr>
+                <th>#</th>
+                <th>التاريخ</th>
+                <th>الدخول</th>
+                <th>الخروج</th>
+                <th>المدة</th>
+                <th>ملاحظة</th>
+              </tr>
+            ) : (
+              <tr>
+                <th>#</th>
+                <th>التاريخ</th>
+                <th>الوقت</th>
+                <th>النوع</th>
+                <th>رمز الجهاز</th>
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {grouped
+              ? pairs.map((r, i) => (
+                  <tr key={i}>
+                    <td>{i + 1}</td>
+                    <td className="font-mono">{r.date}</td>
+                    <td className="font-mono">{r.inTime ?? "—"}</td>
+                    <td className="font-mono">{r.outTime ?? "—"}</td>
+                    <td className="font-bold">{fmtDur(r.minutes)}</td>
+                    <td
+                      className={
+                        r.inTime && r.outTime
+                          ? "text-xs text-slate-500"
+                          : "text-xs font-bold text-amber-700"
+                      }
+                    >
+                      {pairNote(r)}
+                    </td>
+                  </tr>
+                ))
+              : shown.map((p, i) => {
+                  const [d, t] = p.device_time.split("T");
+                  return (
+                    <tr key={i}>
+                      <td>{i + 1}</td>
+                      <td className="font-mono">{d}</td>
+                      <td className="font-mono">{(t ?? "").slice(0, 8)}</td>
+                      <td>
+                        {PUNCH_LABELS[p.punch_type] ?? `نوع ${p.punch_type}`}
+                      </td>
+                      <td className="text-xs text-slate-500 font-mono">
+                        {p.raw_status}/{p.work_code}
+                      </td>
+                    </tr>
+                  );
+                })}
+          </tbody>
+        </table>
+        <div className="grid grid-cols-2 gap-8 mt-10 text-sm text-center">
+          <div>
+            <div className="h-12 border-b border-dotted border-slate-400" />
+            <div className="mt-1 font-bold">توقيع الموظف</div>
+          </div>
+          <div>
+            <div className="h-12 border-b border-dotted border-slate-400" />
+            <div className="mt-1 font-bold">مسؤول الرواتب</div>
+          </div>
+        </div>
+        <PrintFooter cfg={cfg} />
+      </div>,
+      document.body,
+    )}
+    </>
   );
 }

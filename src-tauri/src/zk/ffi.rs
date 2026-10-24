@@ -189,6 +189,10 @@ impl DeviceBackend for ZkDllBackend {
         Err(anyhow!("use protocol backend for add_user"))
     }
 
+    fn set_user_privilege(&mut self, _pin: &str, _privilege: i64) -> Result<()> {
+        Err(anyhow!("use protocol backend for set_user_privilege"))
+    }
+
     fn delete_user(&mut self, _pin: &str) -> Result<()> {
         Err(anyhow!("use protocol backend for delete_user"))
     }

@@ -25,12 +25,15 @@ type TabKey =
   | "device"
   | "settings";
 
+/** مفاتيح الشاشات المجمّدة مؤقتاً (تظهر في القائمة برمز 🔒 ولا تُفتح). */
+const FROZEN: TabKey[] = ["attendance", "payroll", "reports"];
+
 const NAV: { key: TabKey; label: string; icon: string }[] = [
   { key: "dashboard", label: "لوحة التحكم", icon: "📊" },
   { key: "employees", label: "الموظفون", icon: "👥" },
   { key: "attendance", label: "الحضور", icon: "🗓️" },
   { key: "payroll", label: "الرواتب", icon: "💰" },
-  { key: "reports", label: "التقارير والطباعة", icon: "🖨️" },
+  { key: "reports", label: "تقارير", icon: "📋" },
   { key: "device", label: "جهاز البصمة", icon: "🔐" },
   { key: "settings", label: "الإعدادات", icon: "⚙️" },
 ];
@@ -45,16 +48,31 @@ const PAGES: Record<TabKey, ComponentType<{ toast: (m: string, t?: "ok" | "err")
   settings: Settings,
 };
 
+/** طلب فتح شاشة الحضور على تاريخ معيّن (يُستخدم من تنبيه «يوم بدل»). */
+export interface AttendanceFocus {
+  date: string;
+  employeeId?: number;
+  /** فتح نافذة «يوم بدل» تلقائياً لهذا الموظف. */
+  openComp?: boolean;
+}
+
 const KIND_ICON: Record<string, string> = {
   late: "⏰",
   missing_out: "🚪",
   orphan_out: "↩️",
+  comp_off: "🎁",
+  leave_work: "🔄",
+  absent: "📌",
+  early_leave: "⏳",
+  no_punches: "📅",
 };
 
 export default function App() {
   const [tab, setTab] = useState<TabKey>("dashboard");
   const [toastMsg, setToastMsg] = useState<{ m: string; t: "ok" | "err" } | null>(null);
   const [pending, setPending] = useState<string | null>(null);
+  // طلب فتح الحضور على تاريخ معيّن (من تنبيه «يوم بدل»)
+  const [attFocus, setAttFocus] = useState<AttendanceFocus | null>(null);
   // سجل التنبيهات + عدّاد الجرس (كل التنبيهات محفوظة ويمكن العودة إليها)
   const [notifs, setNotifs] = useState<Notification[]>([]);
   const [bellOpen, setBellOpen] = useState(false);
@@ -62,6 +80,21 @@ export default function App() {
   const unseen = notifs.filter((n) => !n.seen).length;
 
   const toast = (m: string, t: "ok" | "err" = "ok") => setToastMsg({ m, t });
+
+  /** نقل المستخدم إلى سجل الحضور على اليوم ذي الصلة بالتنبيه. */
+  const gotoDay = (n: Notification) => {
+    setBellOpen(false);
+    if (FROZEN.includes("attendance")) {
+      toast("شاشة الحضور مجمّدة مؤقتاً 🔒 — لن يُفتح التنبيه الآن", "err");
+      return;
+    }
+    setAttFocus({
+      date: n.day,
+      employeeId: n.employee_id ?? undefined,
+      openComp: n.kind === "comp_off",
+    });
+    setTab("attendance");
+  };
 
   const loadNotifs = () =>
     listNotifications(200).then(setNotifs).catch(() => {});
@@ -113,15 +146,21 @@ export default function App() {
       const skew = e.payload.clock_diff_min;
       if (fixed) {
         const hhmm = fixed.set_to ? fixed.set_to.slice(11, 16) : "—";
+        const m = Math.round(Math.abs(fixed.diff_min ?? 0));
         toast(
-          `✅ صُحّحت ساعة الجهاز تلقائياً إلى ${hhmm} (كانت تختلف بحوالي ${Math.round(Math.abs(fixed.diff_min ?? 0))} دقيقة)`,
+          `✅ صُحّحت ساعة الجهاز تلقائياً إلى ${hhmm} (كانت تختلف بحوالي ${m} دقيقة)${
+            m >= 50 && m <= 70 ? " — تغيّر التوقيت الصيفي/الشتوي 🕐" : ""
+          }`,
           "ok",
         );
       } else if (typeof skew === "number" && Math.abs(skew) > 5) {
+        const m = Math.round(Math.abs(skew));
         toast(
-          Math.abs(skew) > 120
-            ? `⚠️ ساعة الجهاز خاطئة (تُظهر ${e.payload.device_time ?? "؟؟"}) — بصمات اليوم ستُسجل بتاريخ خاطئ. افتح «الجهاز» واضغط «تصحيح الوقت».`
-            : `⚠️ ساعة الجهاز تختلف بحوالي ${Math.round(Math.abs(skew))} دقيقة — صحّحها من صفحة «الجهاز».`,
+          m >= 50 && m <= 70
+            ? `⚠️ ساعة الجهاز تختلف بمقدار ${m} دقيقة (ساعة كاملة) — غالباً بعد تغيير التوقيت الصيفي/الشتوي. افتح «الجهاز» واضغط «ضبط الساعة الآن»، أو فعّل «تصحيح ساعة الجهاز تلقائياً» من الإعدادات.`
+            : Math.abs(skew) > 120
+              ? `⚠️ ساعة الجهاز خاطئة (تُظهر ${e.payload.device_time ?? "؟؟"}) — بصمات اليوم ستُسجل بتاريخ خاطئ. افتح «الجهاز» واضغط «تصحيح الوقت».`
+              : `⚠️ ساعة الجهاز تختلف بحوالي ${m} دقيقة — صحّحها من صفحة «الجهاز».`,
           "err",
         );
       } else if (e.payload.ok && (e.payload.new_punches ?? 0) > 0) {
@@ -194,12 +233,28 @@ export default function App() {
                     لا توجد تنبيهات بعد ✓
                   </div>
                 )}
-                {notifs.map((n) => (
+                {notifs.map((n) => {
+                  const actionable =
+                    n.kind === "comp_off" ||
+                    n.kind === "missing_out" ||
+                    n.kind === "orphan_out" ||
+                    n.kind === "absent" ||
+                    n.kind === "early_leave" ||
+                    n.kind === "no_punches";
+                  return (
                   <div
                     key={n.id}
+                    onClick={actionable ? () => gotoDay(n) : undefined}
                     className={`px-4 py-2.5 border-b border-slate-50 flex gap-3 ${
                       n.seen ? "" : "bg-indigo-50"
-                    }`}
+                    } ${actionable ? "cursor-pointer hover:bg-sky-50" : ""}`}
+                    title={
+                      n.kind === "comp_off"
+                        ? "اضغط للانتقال لصف يوم العطلة وإسناد يوم بدل"
+                        : actionable
+                          ? "اضغط للانتقال ليوم الحضور لعرض التفاصيل وإدخال تعديل يدوياً"
+                          : undefined
+                    }
                   >
                     <span className="text-base mt-0.5">
                       {KIND_ICON[n.kind] ?? "🔔"}
@@ -213,10 +268,17 @@ export default function App() {
                       </div>
                       <div className="text-[10px] text-slate-400 font-mono mt-0.5">
                         {n.day} · {n.created_at.slice(11, 16)}
+                        {actionable && (
+                          <span className="text-sky-600 font-bold mr-1">
+                            {" "}
+                            · فتح اليوم لتعديل يدوياً ←
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 text-xs">
                 <button
@@ -241,18 +303,33 @@ export default function App() {
         <nav className="flex-1 p-3 space-y-1">
           {NAV.map((n) => {
             const active = tab === n.key;
+            const locked = FROZEN.includes(n.key);
             return (
               <button
                 key={n.key}
-                onClick={() => setTab(n.key)}
+                onClick={() => {
+                  if (locked) {
+                    toast(`شاشة «${n.label}» مجمّدة مؤقتاً 🔒`, "err");
+                    return;
+                  }
+                  setTab(n.key);
+                }}
+                title={
+                  locked
+                    ? "شاشة مجمّدة مؤقتاً — ستُفعَّل في تحديث لاحق"
+                    : undefined
+                }
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
                   active
                     ? "bg-indigo-600 text-white font-bold"
-                    : "text-slate-300 hover:bg-slate-800"
+                    : locked
+                      ? "text-slate-500 hover:bg-slate-800/60"
+                      : "text-slate-300 hover:bg-slate-800"
                 }`}
               >
                 <span className="text-base">{n.icon}</span>
-                <span>{n.label}</span>
+                <span className="flex-1 text-right">{n.label}</span>
+                {locked && <span className="text-xs">🔒</span>}
               </button>
             );
           })}
@@ -287,9 +364,16 @@ export default function App() {
             </button>
           </div>
         )}
-        <Page toast={toast} />
+        {tab === "attendance" ? (
+          <Attendance
+            toast={toast}
+            focus={attFocus}
+            onFocusHandled={() => setAttFocus(null)}
+          />
+        ) : (
+          <Page toast={toast} />
+        )}
       </main>
-
       {toastMsg && (
         <Toast
           message={toastMsg.m}

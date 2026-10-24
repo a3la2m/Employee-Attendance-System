@@ -310,6 +310,52 @@ impl ZkProtocol {
         }
         Ok(out)
     }
+
+    /// كتابة سجل مستخدم (حزمة 72 بايت pyzk '<HB8s24sIx7sx24s') على الجهاز —
+    /// تحفظ uid وبطاقة و كلمة السر المحفوظة، وتفرض امتيازاً جديداً إن حُدِّد
+    /// (privilege_override) بدل المحفوظ، ثم تُحدّث الجهاز (refresh 1013).
+    fn write_user(
+        &mut self,
+        pin: &str,
+        name: &str,
+        privilege_override: Option<i64>,
+    ) -> Result<()> {
+        let existing = self.pull_user_records().unwrap_or_default();
+        let found = existing.iter().find(|(_, p, ..)| p == pin);
+        let (uid, mut privilege, card, password) = match found {
+            Some((u, _, _, card, pv, pw)) => (*u, *pv, *card, *pw),
+            None => (pin.parse().unwrap_or(0), 0i64, 0u32, [0u8; 8]),
+        };
+        if let Some(pv) = privilege_override {
+            privilege = pv;
+        }
+        let privilege = privilege.clamp(0, 255) as u8;
+        let mut c = vec![0u8; 72];
+        c[0..2].copy_from_slice(&uid.to_le_bytes());
+        c[2] = privilege;
+        c[3..11].copy_from_slice(&password);
+        let nb = name.as_bytes();
+        let mut nlen = nb.len().min(24);
+        // لا نقطع حرف UTF-8 في منتصفه: نتراجع لآخر حدّ حرف سليم
+        while nlen > 0 && nlen < nb.len() && (nb[nlen] & 0xC0) == 0x80 {
+            nlen -= 1;
+        }
+        c[11..11 + nlen].copy_from_slice(&nb[..nlen]);
+        c[35..39].copy_from_slice(&card.to_le_bytes());
+        let pb = pin.as_bytes();
+        let mut plen = pb.len().min(24);
+        while plen > 0 && plen < pb.len() && (pb[plen] & 0xC0) == 0x80 {
+            plen -= 1;
+        }
+        c[48..48 + plen].copy_from_slice(&pb[..plen]);
+        let (cmd, _) = self.command(CMD_USER_WRQ, &c)?;
+        if cmd != CMD_ACK_OK {
+            return Err(anyhow!("write_user rejected (pin={pin})"));
+        }
+        // refresh data — كما يفعل pyzk بعد كل كتابة
+        let _ = self.command(1013, &[]);
+        Ok(())
+    }
 }
 
 impl DeviceBackend for ZkProtocol {
@@ -410,38 +456,19 @@ impl DeviceBackend for ZkProtocol {
     /// إرسال/تحديث مستخدم على الجهاز: نبحث عن uid المحفوظ لهذا الـpin
     /// (وإلا لخلق الجهاز سجلاً مكرراً) ونحافظ على امتيازه وبطاقته.
     fn add_user(&mut self, pin: &str, name: &str) -> Result<()> {
-        let existing = self.pull_user_records().unwrap_or_default();
-        let found = existing.iter().find(|(_, p, ..)| p == pin);
-        let (uid, privilege, card, password) = match found {
-            Some((u, _, _, card, pv, pw)) => (*u, (*pv).min(255) as u8, *card, *pw),
-            None => (pin.parse().unwrap_or(0), 0u8, 0u32, [0u8; 8]),
-        };
-        // حزمة 72 بايت بالترتيب الرسمي pyzk '<HB8s24sIx7sx24s'
-        let mut c = vec![0u8; 72];
-        c[0..2].copy_from_slice(&uid.to_le_bytes());
-        c[2] = privilege;
-        c[3..11].copy_from_slice(&password);
-        let nb = name.as_bytes();
-        let mut nlen = nb.len().min(24);
-        // لا نقطع حرف UTF-8 في منتصفه: نتراجع لآخر حدّ حرف سليم
-        while nlen > 0 && nlen < nb.len() && (nb[nlen] & 0xC0) == 0x80 {
-            nlen -= 1;
-        }
-        c[11..11 + nlen].copy_from_slice(&nb[..nlen]);
-        c[35..39].copy_from_slice(&card.to_le_bytes());
-        let pb = pin.as_bytes();
-        let mut plen = pb.len().min(24);
-        while plen > 0 && plen < pb.len() && (pb[plen] & 0xC0) == 0x80 {
-            plen -= 1;
-        }
-        c[48..48 + plen].copy_from_slice(&pb[..plen]);
-        let (cmd, _) = self.command(CMD_USER_WRQ, &c)?;
-        if cmd != CMD_ACK_OK {
-            return Err(anyhow!("add_user rejected"));
-        }
-        // refresh data
-        let _ = self.command(1013, &[]);
-        Ok(())
+        self.write_user(pin, name, None)
+    }
+
+    /// تعديل صلاحية مستخدم قائم على الجهاز (0 عادي / 6 مدير / 14 أدمن كامل)
+    /// — الكتابة تحافظ على اسمه وبطاقته وبصماته، وتغيّر الامتياز فقط.
+    fn set_user_privilege(&mut self, pin: &str, privilege: i64) -> Result<()> {
+        let existing = self.pull_user_records()?;
+        let name = existing
+            .iter()
+            .find(|(_, p, ..)| p == pin)
+            .map(|(_, _, n, ..)| n.clone())
+            .ok_or_else(|| anyhow!("الرقم {pin} غير موجود على الجهاز — أرسله أولاً"))?;
+        self.write_user(pin, &name, Some(privilege))
     }
 
     /// تعطيل مستخدم على الجهاز = حذف سجله (CMD_DELETE_USER، حزمة pyzk 'h'):

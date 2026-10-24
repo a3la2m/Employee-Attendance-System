@@ -25,15 +25,20 @@ export default function Modal({
   hideClose?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
+  // نحتفظ بأحدث onClose في مرجع حتى لا يعيد التأثير التشغيل عند كل تصيير
+  // (onClose يُمرَّر غالباً كدالة سهمية جديدة كل مرة — وإلا فقد الحقل تركيزه
+  // بعد كل حرف لأن التأثير كان يعيد التركيز على النافذة).
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") closeRef.current();
     };
     window.addEventListener("keydown", onKey);
     panelRef.current?.focus();
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, []);
 
   return (
     <div

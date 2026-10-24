@@ -28,6 +28,30 @@ export interface Employee {
   annual_leave_days: number;
   /** آخر شهر احتُسب رصيد الإجازة (YYYY-MM) — للاحتساب من حيث توقف. */
   leave_accrual_month: string | null;
+  /** الوردية المسنَدة (null = يرث الوردية الرئيسية). */
+  shift_id: number | null;
+  /** صلاحية الموظف على جهاز البصمة: 0 = عادي، 6 = مدير، 14 = أدمن كامل (سوبر أدمن). */
+  device_privilege: number;
+}
+
+/** وردية دوام: تحدد ساعات العمل ويُسنَد إليها الموظفون. */
+export interface Shift {
+  id: number;
+  name: string;
+  /** HH:MM */
+  work_start: string;
+  /** HH:MM */
+  work_end: string;
+  /** ساعات الدوام الأساسية (منها الإضافي). */
+  daily_hours: number;
+  /** الاستراحة القياسية بالدقائق. */
+  break_min: number;
+  /** الوردية الرئيسية: يرثها كل موظف غير مسنَد لوردية. */
+  is_default: boolean;
+  /** 0 = مهجورة (تبقى بالسجل ولا تُسنَد لموظفين جدد). */
+  active: boolean;
+  /** عدد الموظفين المسنَدين إليها صراحةً. */
+  employee_count: number;
 }
 
 export interface AttendanceDay {
@@ -47,6 +71,10 @@ export interface AttendanceDay {
   leave_paid?: boolean | null;
   /** تعديل يدوي من المسؤول (لا تمسه إعادة الاحتساب). */
   manual?: boolean;
+  /** هل التاريخ عطلة رسمية (من الإعدادات) — يظهر حتى مع الدوام. */
+  holiday?: boolean;
+  /** خيار تعويض الدوام في العطلة: "money" (نقدي، افتراضي) أو "comp" (يوم بدل). */
+  holiday_work_choice?: string | null;
 }
 
 export interface PayrollResult {
@@ -72,9 +100,67 @@ export interface PayrollResult {
   unpaid_leave_days: number;
   /** أيام الإجازات الرسمية (الأعياد). */
   holiday_days: number;
+  /** أيام دُوّم فيها في عطلة رسمية (اختيار «نقدي»: تُدفع بـ62 + ساعات×1.5). */
+  holiday_work_days?: number;
+  /** أجر العمل في العطل الرسمية (نقدي): 62 لكل يوم + الساعات×1.5×سعر الساعة. */
+  holiday_work_pay?: number;
+  /** أيام البدل التعويضية (عطلة تعويضية بدل دوام عطلة رسمية). */
+  comp_off_days?: number;
+  /** أجر أيام البدل التعويضية (62 عن كل يوم). */
+  comp_off_pay?: number;
   late_deduction: number;
   absence_deduction: number;
   net_pay: number;
+}
+
+/** حالة دفع راتب موظف في شهر بعينه (صف واحد لكل موظف وشهر). */
+export interface SalaryPayment {
+  employee_id: number;
+  period: string;
+  /** الصافي المدفوع وقت تعليمه كمدفوع. */
+  net: number;
+  /** نقدي | تحويل مصرفي | شيك | أخرى (اختياري). */
+  method: string | null;
+  note: string | null;
+  /** تاريخ التعليم كمدفوع (ISO). */
+  paid_at: string;
+  /** اسم الموظف من جدول الموظفين (اختياري — قد يكون محذوفاً). */
+  employee_name?: string | null;
+}
+
+/** لقطة إعدادات طباعة القسيمة ونسبها وأرقامها لحظة الطباعة/الدفع —
+ * تبقى القسيمة قابلة لإثبات ما طُبع فعلاً حتى لو تغيّرت الإعدادات لاحقاً. */
+export interface PayslipSnapshot {
+  employee_id: number;
+  period: string;
+  /** سعر الساعة الأساسي وقتها */
+  rate: number;
+  /** معامل ساعة الإضافي وقتها */
+  ot_mult: number;
+  /** نِسب البدلات الثلاثة (%) — مجموعها 100 وقت الطباعة */
+  p_work: number;
+  p_risk: number;
+  p_bonus: number;
+  /** الأرقام المطبوعة وقتها */
+  basic: number;
+  overtime: number;
+  weekend_pay: number;
+  allowances: number;
+  holiday_work: number;
+  comp_off: number;
+  /** حصص البدلات الثلاثة المقطوعة فعلاً من المتبقي */
+  share_work: number;
+  share_risk: number;
+  share_bonus: number;
+  /** الصافي المستحق (لا يتغيّر بالتقسيم). */
+  net: number;
+  /** وقت حفظ اللقطة (ISO — يملؤه الخلفي). */
+  printed_at?: string | null;
+  /** هل كان تقسيم الطباعة مفعلاً وقت الحفظ؟ */
+  enabled?: boolean;
+  /** نسخة JSON كاملة مجمّدة من القسيمة وقتها (الأيام + البنود + الإعدادات)
+   * — تُطبع لاحقاً بالضبط كما كانت حتى لو تغيّر الحضور أو الإعدادات بعدها. */
+  sheet?: string | null;
 }
 
 export interface DeviceInfo {
@@ -160,6 +246,14 @@ export interface DailyRow {
   leave_type?: string | null;
   /** هل الإجازة مدفوعة — null لغير الإجازات. */
   leave_paid?: boolean | null;
+  /** هل التاريخ عطلة رسمية (عيد) — يظهر حتى لو دوّم الموظف فيه. */
+  holiday?: boolean;
+  /** تاريخ يوم البدل المسند عن دوام هذه العطلة (YYYY-MM-DD) — فارغ إن لم يُسند. */
+  comp_off?: string | null;
+  /** للعطلة التعويضية: تاريخ العطلة الرسمية التي عوّضتها. */
+  comp_for?: string | null;
+  /** خيار تعويض الدوام في العطلة: "money" (نقدي) أو "comp" (يوم بدل). */
+  holiday_work_choice?: string | null;
   /** مُلغي خصم الاستراحة لهذا اليوم (زر في نافذة التعديل). */
   no_break?: boolean;
   /** مُزاع بدل الفطور لهذا اليوم (زر في نافذة التعديل). */
@@ -205,6 +299,8 @@ export interface Leave {
   note: string;
   /** هل الإجازة مدفوعة (تُحتسب ضمن بدل العطلة لكل يوم دوام). */
   paid: boolean;
+  /** للعطلة التعويضية (`comp`): تاريخ العطلة الرسمية التي عوّضتها. */
+  comp_for_date?: string | null;
 }
 
 /** إجازة رسمية (عيد) — مدفوعة لكل الموظفين. */

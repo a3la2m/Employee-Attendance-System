@@ -14,7 +14,10 @@ import type {
   PayrollMonth,
   PayrollResult,
   PresentNowItem,
+  PayslipSnapshot,
+  SalaryPayment,
   Settings,
+  Shift,
   StorageInfo,
   SyncResult,
   TimeCheck,
@@ -34,6 +37,8 @@ export const getStorageInfo = () => invoke<StorageInfo>("get_storage_info");
 export const setStorageDir = (dir: string) =>
   invoke<StorageInfo>("set_storage_dir", { dir });
 export const backupNow = () => invoke<BackupResult>("backup_now");
+export const exportStorageFiles = (targetDir: string) =>
+  invoke<string[]>("export_storage_files", { targetDir });
 export const restoreSettings = (path?: string) =>
   invoke<number>("restore_settings", { path: path ?? null });
 
@@ -44,14 +49,34 @@ export const upsertEmployee = (emp: Employee) =>
 export const deleteEmployee = (id: number) =>
   invoke<void>("delete_employee", { id });
 
+// --- الورديات ---
+export const listShifts = () => invoke<Shift[]>("list_shifts");
+export const upsertShift = (shift: Shift) => invoke<number>("upsert_shift", { shift });
+export const setDefaultShift = (id: number) => invoke<void>("set_default_shift", { id });
+export const deleteShift = (id: number) => invoke<void>("delete_shift", { id });
+/** إسناد جماعي: يُسنِد قائمة موظفين إلى وردية (`null` = الوردية الرئيسية). */
+export const assignEmployeesToShift = (employeeIds: number[], shiftId: number | null) =>
+  invoke<number>("assign_employees_to_shift", { employeeIds, shiftId });
+/** يعيد احتساب الحضور بعد تغيير وردية/إسناد. */
+export const reassignShiftRecompute = (from: string, to: string) =>
+  invoke<number>("reassign_shift_recompute", { from, to });
+
 // --- الجهاز ---
 export const deviceInfo = () => invoke<DeviceInfo>("device_info");
 export const syncDevice = () => invoke<SyncResult>("sync_device");
 export const pushUserToDevice = (pin: string, name: string) =>
   invoke<string>("push_user_to_device", { pin, name });
+/** يولد رقم بصمة جديد = آخر رقم معرف + 1 من الجهاز وقاعدة البيانات */
+export const getNextDevicePin = () => invoke<string>("get_next_device_pin");
 /** تعطيل مستخدم على الجهاز (حذفه منه) — يُستدعى عند إيقاف الموظف */
 export const disableUserOnDevice = (pin: string) =>
   invoke<string>("disable_user_on_device", { pin });
+/** تعديل صلاحية موظف على جهاز البصمة: 0 = عادي، 6 = مدير، 14 = أدمن كامل (سوبر أدمن) */
+export const setDevicePrivilege = (pin: string, privilege: number) =>
+  invoke<string>("set_device_privilege", { pin, privilege });
+/** حذف البيانات التجريبية (التي تُنشأ لأول تشغيل فقط) — يعيد عدد الصفوف المحذوفة */
+export const clearDemoData = () =>
+  invoke<{ deleted: number }>("clear_demo_data");
 
 /** وصف مختصر لفحص/تصحيح ساعة الجهاز — يُلحق بنص نتائج المزامنة */
 export const clockNote = (c?: ClockCheck): string =>
@@ -136,6 +161,35 @@ export const employeePayrollHistory = (employeeId: number) =>
     employeeId,
   });
 
+// --- دفع الرواتب: حالة «مدفوع» + لقطة إعدادات طباعة القسيمة ---
+/** تعليم راتب موظف في شهر كمدفوع — يعيد تاريخ الدفع (ISO). */
+export const markSalaryPaid = (
+  employeeId: number,
+  period: string,
+  net: number,
+  method?: string | null,
+  note?: string | null,
+) =>
+  invoke<string>("mark_salary_paid", {
+    employeeId,
+    period,
+    net,
+    method: method ?? null,
+    note: note ?? null,
+  });
+/** إلغاء تعليم راتب موظف في شهر كمدفوع (عدد المحذوف). */
+export const unmarkSalaryPaid = (employeeId: number, period: string) =>
+  invoke<number>("unmark_salary_paid", { employeeId, period });
+/** مدفوعات شهر بعينه — أو كل الفترات إن فُتحت الفترة. */
+export const salaryPayments = (period?: string) =>
+  invoke<SalaryPayment[]>("salary_payments", { period: period ?? null });
+/** حفظ لقطة إعدادات الطباعة ونسبها لحظة الطباعة/الدفع (تستبدل السابقة). */
+export const savePayslipSnapshot = (snap: PayslipSnapshot) =>
+  invoke<string>("save_payslip_snapshot", { snap });
+/** لقطات القسيمة لشهر بعينه — أو كل الفترات إن فُتحت الفترة. */
+export const payslipSnapshots = (period?: string) =>
+  invoke<PayslipSnapshot[]>("payslip_snapshots", { period: period ?? null });
+
 // --- الإجازات ---
 export const addLeave = (
   employeeId: number,
@@ -172,6 +226,30 @@ export const holidayAdd = (date: string, name: string) =>
   invoke<number>("holiday_add", { date, name });
 export const holidayDelete = (id: number) =>
   invoke<void>("holiday_delete", { id });
+
+/** يضبط خيار التعويض لليوم الذي داوم فيه الموظف في عطلة رسمية:
+ * "money" (نقدي، 62 + الساعات×1.5) أو "comp" (يوم بدل). */
+export const setHolidayWorkChoice = (
+  employeeId: number,
+  date: string,
+  choice: "money" | "comp",
+) =>
+  invoke<{ employee_id: number; employee_name: string; date: string; choice: string }>(
+    "set_holiday_work_choice",
+    { employeeId, date, choice },
+  );
+
+/** إسناد «يوم بدل» (عطلة تعويضية) عن دوام الموظف في عطلة رسمية —
+ * يُسجّل عطلة تعويضية في `compDate` (يمكن أن يكون بالشهر التالي). */
+export const assignCompOff = (
+  employeeId: number,
+  holidayDate: string,
+  compDate: string,
+) =>
+  invoke<{ id: number; employee_id: number; name: string; holiday_date: string; comp_date: string }>(
+    "assign_comp_off",
+    { employeeId, holidayDate, compDate },
+  );
 
 // --- عام ---
 export const dashboard = () => invoke<Dashboard>("dashboard");

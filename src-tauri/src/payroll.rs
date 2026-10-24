@@ -22,6 +22,11 @@
 use crate::models::{AttendanceDay, PayrollResult, PayrollSettings};
 use chrono::{Datelike, NaiveDate};
 
+/// مضاعف أجر العمل في العطلة الرسمية (السياسة النقدية): ساعات دوام يوم عطلة
+/// رسمية تُدفع ×1.5 فوق أجر يوم العطلة (62) — يحلّ محل أجر الساعات العادي
+/// لذلك اليوم بالكامل (لا يُضاف فوقه)، فلا يُشترط أن يكون ضمن العمل الإضافي.
+pub const HOLIDAY_WORK_MULT: f64 = 1.5;
+
 /// يحسب راتب شهر (period بصيغة "YYYY-MM") من قائمة أيام الحضور المحسوبة مسبقاً.
 ///
 /// `days` = كل أيام attendance_days الخاص بالموظف خلال الفترة.
@@ -43,9 +48,19 @@ pub fn compute_payroll(
     let mut paid_leave_days: i64 = 0;
     let mut unpaid_leave_days: i64 = 0;
     let mut holiday_days: i64 = 0;
+    let mut holiday_work_days: i64 = 0;
+    let mut holiday_work_min: i64 = 0;
+    let mut comp_off_days: i64 = 0;
 
     for d in days {
         if d.status == "leave" {
+            // يوم بدل (عطلة تعويضية بدل دوام عطلة رسمية): يُدفع له أجر يوم
+            // العطلة (weekend_allow — افتراضي62) ويُعدّ يوماً مدفوعاً لبدل
+            // العطلة الأسبوعية — بلا ساعات ولا بدلات يومية (راحة بدل دوام).
+            if d.leave_type.as_deref() == Some("comp") && d.leave_paid.unwrap_or(false) {
+                comp_off_days += 1;
+                continue;
+            }
             // إجازة: لا ساعات ولا بدلات — تُعدّ للمعلومة ولبدل العطلة إن مدفوعة
             if d.leave_paid.unwrap_or(false) {
                 paid_leave_days += 1;
@@ -55,7 +70,7 @@ pub fn compute_payroll(
             continue;
         }
         if d.status == "holiday" {
-            holiday_days += 1; // عطلة رسمية: بلا ساعات (بدلها اليومي من بدل العطلة)
+            holiday_days += 1; // عطلة رسمية بلا دوام: بلا ساعات (بدلها اليومي من بدل العطلة)
             continue;
         }
         if d.status == "weekend" {
@@ -65,10 +80,31 @@ pub fn compute_payroll(
         if d.absent || d.first_in.is_none() {
             continue;
         }
-        days_present += 1;
-        total_worked_min += d.worked_min;
-        overtime_min += d.overtime_min;
+        days_present += 1; // البدلات اليومية تبقى كما في أي يوم حضور
+        // هل اختار المسؤول لهذا اليوم المتزامن مع عطلة رسمية التعويض النقدي؟
+        // الافتراضي نقدي؛ وخيار «بدل» يعني أن الساعات تُدفع كدوام عادي.
+        let money_choice = d.holiday_work_choice.as_deref() != Some("comp");
+        if d.holiday && money_choice {
+            // دوام في عطلة رسمية (خيار «نقدي»): الساعات تُدفع بالمضاعف
+            // فوق أجر اليوم (62) فلا تدخل الأجر العادي ولا الإضافي المكرّر.
+            holiday_work_days += 1;
+            holiday_work_min += d.worked_min;
+        } else {
+            total_worked_min += d.worked_min;
+            overtime_min += d.overtime_min;
+        }
     }
+
+    // أجر العمل في العطل الرسمية (الخيار النقدي):62 عن كل يوم دوام عطلة
+    // + الساعات الفعلية ×1.5 × سعر الساعة — يحلّ محل أجر ساعات ذلك اليوم.
+    let holiday_hours = holiday_work_min as f64 / 60.0;
+    let holiday_work_pay = if holiday_work_days > 0 {
+        s.weekend_allow * holiday_work_days as f64 + holiday_hours * s.hourly_rate * HOLIDAY_WORK_MULT
+    } else {
+        0.0
+    };
+    // أجر أيام البدل التعويضية (أجر يوم العطلة —62 عن كل يوم بدل).
+    let comp_off_pay = s.weekend_allow * comp_off_days as f64;
 
     // 1) الساعات الفعلية (بدون الإضافي — الإضافي يُحسب منفصلاً بالمضاعف)
     let regular_min = (total_worked_min - overtime_min).max(0);
@@ -103,8 +139,8 @@ pub fn compute_payroll(
     let late_deduction = 0.0;
     let absence_deduction = 0.0;
 
-    // 6) الصافي
-    let net_pay = base_pay + overtime_pay + allowances + weekend_pay;
+    // 6) الصافي (شامل أجر العمل في العطلة وأجر أيام البدل)
+    let net_pay = base_pay + overtime_pay + allowances + weekend_pay + holiday_work_pay + comp_off_pay;
 
     PayrollResult {
         employee_id: emp_id,
@@ -112,7 +148,9 @@ pub fn compute_payroll(
         pin,
         period: period.to_string(),
         days_present,
-        total_worked_hours: worked_hours,
+        // ساعات العمل في العطلة تُعرض مع ساعات الشهر (دُوّم فعلاً) وإن دُفعت
+        // ب-policy منفصلة
+        total_worked_hours: worked_hours + holiday_hours,
         overtime_hours,
         base_pay: base_pay + overtime_pay, // الأساسي يشمل الإضافي للعرض
         allowances,
@@ -122,6 +160,10 @@ pub fn compute_payroll(
         paid_leave_days,
         unpaid_leave_days,
         holiday_days,
+        holiday_work_days,
+        holiday_work_pay,
+        comp_off_days,
+        comp_off_pay,
         late_deduction,
         absence_deduction,
         net_pay,
@@ -356,6 +398,8 @@ mod tests {
             status: "present".into(),
             leave_paid: None,
             manual: false,
+            holiday: false,
+            holiday_work_choice: None,
         }
     }
 
@@ -376,6 +420,8 @@ mod tests {
             status: "leave".into(),
             leave_paid: Some(paid),
             manual: false,
+            holiday: false,
+            holiday_work_choice: None,
         }
     }
 
@@ -396,6 +442,17 @@ mod tests {
             status: "holiday".into(),
             leave_paid: None,
             manual: false,
+            holiday: true,
+            holiday_work_choice: None,
+        }
+    }
+
+    /// يوم دوام في عطلة رسمية (بصمات على تاريخ عطلة): يُدفع بسياسة العمل في
+    /// العطلة الرسمية بدل الأجر العادي.
+    fn holiday_work_day(date: &str, worked: i64, ot: i64) -> AttendanceDay {
+        AttendanceDay {
+            holiday: true,
+            ..day(date, worked, 0, ot)
         }
     }
 
@@ -475,6 +532,8 @@ mod tests {
             status: "weekend".into(),
             leave_paid: None,
             manual: false,
+            holiday: false,
+            holiday_work_choice: None,
         }
     }
 
@@ -609,6 +668,79 @@ mod tests {
         assert!((r.weekend_pay - 62.0).abs() < 1e-9);
     }
 
+    // ------------------------------ العمل في العطلة الرسمية وأيام البدل
+
+    #[test]
+    fn money_policy_pays_holiday_allowance_plus_half_multiplier() {
+        // سياسة «نقدي»: دوام 8.5 سا في عطلة رسمية = 62 + (8.5 × 10 × 1.5)
+        // = 62 + 127.5 = 189.5، ويحلّ محل أجر الساعات العادي (لا 85 فوقه)
+        // + البدلات اليومية 12 (كأي يوم حضور) → 201.5
+        let days = vec![holiday_work_day("2025-06-08", 510, 0)];
+        let r = compute_payroll(1, "أحمد", None, "2025-06", &days, false, &[4, 5], &s());
+        assert_eq!(r.holiday_work_days, 1);
+        assert_eq!(r.days_present, 1);
+        assert!((r.holiday_work_pay - 189.5).abs() < 1e-9);
+        assert!((r.base_pay).abs() < 1e-9, "لا أجر ساعات عادي مضاف");
+        assert!((r.total_worked_hours - 8.5).abs() < 1e-9, "الساعات تظهر للعرض");
+        assert!((r.allowances - 12.0).abs() < 1e-9);
+        assert!((r.net_pay - 201.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn money_policy_ignores_overtime_split_on_holiday() {
+        // ساعات العطلة كلها بالمضاعف: لا يُضاف إضافي منفصل فوقها (تجنّب الازدواج)
+        let days = vec![holiday_work_day("2025-06-08", 600, 90)];
+        let r = compute_payroll(1, "أحمد", None, "2025-06", &days, false, &[4, 5], &s());
+        assert_eq!(r.overtime_hours, 0.0);
+        // 62 + (10 سا × 10 × 1.5) = 62 + 150 = 212
+        assert!((r.holiday_work_pay - 212.0).abs() < 1e-9);
+        assert!((r.base_pay).abs() < 1e-9);
+    }
+
+    #[test]
+    fn comp_choice_pays_holiday_hours_normally() {
+        // خيار «يوم بدل» على اليوم نفسه: ساعات يوم العطلة تُدفع عادياً (×1)
+        // بلا 62 في يومها (البدل يُمنح كيوم عطلة لاحق).
+        let days = vec![AttendanceDay {
+            holiday_work_choice: Some("comp".into()),
+            ..holiday_work_day("2025-06-08", 510, 0)
+        }];
+        let r = compute_payroll(1, "أحمد", None, "2025-06", &days, false, &[4, 5], &s());
+        assert_eq!(r.holiday_work_days, 0);
+        assert!((r.holiday_work_pay).abs() < 1e-9);
+        assert!((r.base_pay - 85.0).abs() < 1e-9);
+        assert_eq!(r.days_present, 1);
+    }
+
+    #[test]
+    fn comp_off_day_pays_holiday_wage_and_counts_paid() {
+        // يوم بدل (عطلة تعويضية): يُدفع له أجر يوم العطلة 62 ويُعدّ يوماً
+        // مدفوعاً لبدل العطلة الأسبوعية — بلا ساعات ولا بدلات يومية
+        let days = vec![
+            day("2025-06-07", 510, 0, 0),                    // السبت دوام
+            leave_day("2025-06-08", "comp", true),           // الأحد: يوم بدل
+            off_day("2025-06-13"),                           // الجمعة عطلة
+        ];
+        let r = compute_payroll(1, "أحمد", None, "2025-06", &days, true, &[4], &s());
+        assert_eq!(r.comp_off_days, 1);
+        assert_eq!(r.paid_leave_days, 0, "يوم البدل لا يُعدّ إجازة عادية");
+        assert_eq!(r.paid_workdays, 2);
+        assert!((r.comp_off_pay - 62.0).abs() < 1e-9);
+        assert!((r.weekend_pay - 62.0).abs() < 1e-9);
+        // 97 (يوم دوام) + 62 (بدل) + 62 (عطلة أسبوعية) = 221
+        assert!((r.net_pay - 221.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unpaid_comp_day_pays_nothing() {
+        // يوم بدل بلا دفع (نادر): لا 62 ولا ساعات — كإجازة غير مدفوعة
+        let days = vec![leave_day("2025-06-08", "comp", false)];
+        let r = compute_payroll(1, "أحمد", None, "2025-06", &days, false, &[4, 5], &s());
+        assert_eq!(r.comp_off_days, 0);
+        assert_eq!(r.unpaid_leave_days, 1);
+        assert!((r.net_pay).abs() < 1e-9);
+    }
+
     #[test]
     fn leave_on_weekend_day_not_counted() {
         // إجازة مدفوعة تسقط في يوم عطلة أسبوعية → لا تستحق (العطلة أصلاً غير مستحقة)
@@ -660,6 +792,8 @@ mod tests {
             status: "absent".into(),
             leave_paid: None,
             manual: false,
+            holiday: false,
+            holiday_work_choice: None,
         }
     }
 

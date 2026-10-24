@@ -8,15 +8,18 @@ import {
   clockNote,
   setDayManual,
   setDayFlags,
+  getSettings,
+  holidaysList,
+  assignCompOff,
+  setHolidayWorkChoice,
 } from "../lib/api";
-import type { AttendanceDay, DailyRow, Employee } from "../lib/types";
+import type { AttendanceDay, DailyRow, Employee, Settings, Holiday } from "../lib/types";
 import Modal from "../components/Modal";
 import { TableSkeleton } from "../components/Skeleton";
+import { useToday, monthLocal } from "../lib/useToday";
+import { leaveLabel, workedOnHoliday } from "../lib/labels";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
-
-const now = new Date();
-const thisPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 
 function hm(min: number) {
   const h = Math.floor(min / 60);
@@ -34,26 +37,98 @@ function tfmt(iso: string | null) {
 const isoLocal = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-const todayISO = isoLocal(now);
+/** أقل حقول يحتاجها نافذة معلومات العطلة (تشمل صفوف التقرير اليومي وشهور الحضور). */
+export interface HolidayInfoRow {
+  name?: string;
+  worked_min: number;
+  holiday_work_choice?: string | null;
+  comp_off?: string | null;
+  comp_for?: string | null;
+  status?: string;
+  leave_type?: string | null;
+}
 
-export default function Attendance({ toast }: { toast: Toast }) {
-  const [period, setPeriod] = useState(thisPeriod);
+/** طلب فتح الحضور على تاريخ معيّن (يُمرَّر من App عند الضغط على تنبيه «يوم بدل»). */
+export interface AttendanceFocusProp {
+  date: string;
+  employeeId?: number;
+  openComp?: boolean;
+}
+
+export default function Attendance({
+  toast,
+  focus,
+  onFocusHandled,
+}: {
+  toast: Toast;
+  focus?: AttendanceFocusProp | null;
+  onFocusHandled?: () => void;
+}) {
+  const { today, rolledFrom } = useToday();
+  const [period, setPeriod] = useState(monthLocal(new Date()));
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [loadingM, setLoadingM] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [dailyDate, setDailyDate] = useState(
-    `${period}-${String(now.getDate()).padStart(2, "0")}`,
-  );
+  const [dailyDate, setDailyDate] = useState(today);
   const [daily, setDaily] = useState<DailyRow[]>([]);
   const [loadingD, setLoadingD] = useState(true);
   const [emps, setEmps] = useState<Employee[]>([]);
   const [editing, setEditing] = useState<DailyRow | null>(null);
+  const [compOff, setCompOff] = useState<DailyRow | null>(null);
+  // يوم دوام في عطلة رسمية تُعرض له تفاصيل التعويض (زر ⓘ)
+  const [infoDay, setInfoDay] = useState<{
+    row: HolidayInfoRow;
+    date: string;
+    assignRow?: DailyRow;
+  } | null>(null);
+  const [choiceBusy, setChoiceBusy] = useState<number | null>(null);
+  const [cfg, setCfg] = useState<Settings>({});
+  const [holidays, setHolidays] = useState<Holiday[]>([]);
+  // طلب مُعلَّق من تنبيه «يوم بدل»: ننتظر تحميل التقرير اليومي ثم نفتح النافذة
+  const [pendingComp, setPendingComp] = useState<{ date: string; employeeId?: number } | null>(
+    null,
+  );
 
   useEffect(() => {
     listEmployees()
       .then(setEmps)
       .catch(() => {});
+    getSettings().then(setCfg).catch(() => {});
+    holidaysList().then(setHolidays).catch(() => {});
   }, []);
+
+  // وصول طلب من تنبيه «يوم بدل»: افتح التقرير على يوم العطلة ثم نافذة الإسناد
+  useEffect(() => {
+    if (!focus) return;
+    setDailyDate(focus.date);
+    setPeriod(focus.date.slice(0, 7));
+    if (focus.openComp) {
+      setPendingComp({ date: focus.date, employeeId: focus.employeeId });
+    }
+    onFocusHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus]);
+
+  // بعد تحميل التقرير اليومي ليوم العطلة: افتح نافذة «يوم بدل» للموظف المطلوب
+  useEffect(() => {
+    if (!pendingComp || loadingD) return;
+    if (pendingComp.date !== dailyDate) return;
+    const row = pendingComp.employeeId
+      ? daily.find((r) => r.employee_id === pendingComp.employeeId)
+      : daily.find((r) => workedOnHoliday(r));
+    if (row) setCompOff(row);
+    setPendingComp(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingComp, loadingD, daily, dailyDate]);
+
+  // تبدّل اليوم والتطبيق مفتوح ليلاً: رحّل اليوم المعروض والشهر إن كانا
+  // مثبَّتين على اليوم/الشهر المنصرم — بلا حاجة لإعادة تشغيل التطبيق.
+  useEffect(() => {
+    if (!rolledFrom) return;
+    setDailyDate((d) => (d === rolledFrom ? today : d));
+    setPeriod((p) => (p === monthLocal(new Date(rolledFrom)) ? monthLocal(new Date()) : p));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rolledFrom, today]);
 
   const empNames = useMemo(
     () => Object.fromEntries(emps.map((e) => [e.id, e.name])),
@@ -120,6 +195,24 @@ export default function Attendance({ toast }: { toast: Toast }) {
     }
   };
 
+  // تبديل خيار التعويض عن دوام العطلة الرسمية لهذا اليوم/الموظف
+  const chooseHoliday = async (row: DailyRow, choice: "money" | "comp") => {
+    setChoiceBusy(row.employee_id);
+    try {
+      await setHolidayWorkChoice(row.employee_id, dailyDate, choice);
+      toast(
+        choice === "money"
+          ? `اختير «نقدي» — يُدفع ${cfg.weekend_allow || 62} + الساعات ×1.5 ✅`
+          : `اختير «يوم بدل» — ساعات اليوم عادية، ويُنبّهك الجرس لِتُسنده 🎁`,
+      );
+      await Promise.all([load(), loadDaily()]);
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setChoiceBusy(null);
+    }
+  };
+
   // تنقّل بين الأشهر (‹ السابق | حقل الشهر | التالي ›) — موحّد مع الرواتب
   const shiftMonth = (delta: number) => {
     const [y, m] = period.split("-").map(Number);
@@ -172,7 +265,7 @@ export default function Attendance({ toast }: { toast: Toast }) {
             <button
               className="btn-ghost !px-2.5 !py-1.5 text-lg font-bold leading-none disabled:opacity-30"
               onClick={() => shiftMonth(1)}
-              disabled={period >= thisPeriod}
+              disabled={period >= monthLocal(new Date())}
               title="الشهر التالي"
               aria-label="الشهر التالي"
             >
@@ -205,13 +298,13 @@ export default function Attendance({ toast }: { toast: Toast }) {
               type="date"
               className="input !w-44"
               value={dailyDate}
-              max={todayISO}
+              max={today}
               onChange={(e) => e.target.value && setDailyDate(e.target.value)}
             />
             <button
               className="btn-ghost !px-2.5 !py-1.5 text-lg font-bold leading-none disabled:opacity-30"
               onClick={() => shiftDay(1)}
-              disabled={dailyDate >= todayISO}
+              disabled={dailyDate >= today}
               title="اليوم التالي"
               aria-label="اليوم التالي"
             >
@@ -284,9 +377,14 @@ export default function Attendance({ toast }: { toast: Toast }) {
                     </td>
                     <td className="td">
                       {r.status === "leave" ? (
-                        <span className="badge bg-sky-100 text-sky-700">
-                          {r.leave_type === "sick" ? "إجازة مرضية" : "إجازة سنوية"}
-                          {r.leave_paid === false ? " (غير مدفوعة)" : ""}
+                        <span
+                          className={`badge ${
+                            r.leave_type === "comp"
+                              ? "bg-fuchsia-100 text-fuchsia-700"
+                              : "bg-sky-100 text-sky-700"
+                          }`}
+                        >
+                          {leaveLabel(r.leave_type, r.leave_paid)}
                         </span>
                       ) : r.status === "holiday" ? (
                         <span className="badge bg-violet-100 text-violet-700">
@@ -308,6 +406,42 @@ export default function Attendance({ toast }: { toast: Toast }) {
                       ) : (
                         <span className="badge bg-emerald-100 text-emerald-700">
                           حضور
+                        </span>
+                      )}
+                      {workedOnHoliday(r) && (
+                        <>
+                          <span
+                            className="badge bg-violet-100 text-violet-700 mr-1"
+                            title="دوّم في عطلة رسمية — اختر له تعويضاً: نقدي أو يوم بدل"
+                          >
+                            دوام عطلة
+                          </span>
+                          <span
+                            className={`badge mr-1 ${
+                              r.holiday_work_choice === "comp"
+                                ? "bg-fuchsia-100 text-fuchsia-700"
+                                : "bg-amber-100 text-amber-700"
+                            }`}
+                            title="التعويض المختار لهذا اليوم"
+                          >
+                            {r.holiday_work_choice === "comp" ? "🎁 بدل" : "💰 نقدي"}
+                          </span>
+                        </>
+                      )}
+                      {r.comp_off && (
+                        <span
+                          className="badge bg-fuchsia-100 text-fuchsia-700 mr-1"
+                          title={`أُسند له يوم بدل عن هذه العطلة بتاريخ ${r.comp_off}`}
+                        >
+                          يوم بدل: {r.comp_off}
+                        </span>
+                      )}
+                      {r.comp_for && (
+                        <span
+                          className="badge bg-fuchsia-50 text-fuchsia-600 mr-1"
+                          title={`عطلة تعويضية بدل دوام عطلة رسمية ${r.comp_for}`}
+                        >
+                          بدل {r.comp_for}
                         </span>
                       )}
                       {ongoing && (
@@ -352,6 +486,53 @@ export default function Attendance({ toast }: { toast: Toast }) {
                       >
                         ✏️ تعديل
                       </button>
+                      {workedOnHoliday(r) && (
+                        <>
+                          <button
+                            className="btn-ghost !py-1 !px-2 text-xs mr-1"
+                            title="لماذا صار هذا اليوم عطلة/بدلاً؟ اشرح لي"
+                            aria-label={`معلومات تعويض العطلة ${r.name}`}
+                            onClick={() => setInfoDay({ row: r, date: dailyDate, assignRow: r })}
+                          >
+                            ⓘ معلومات
+                          </button>
+                          {r.comp_off ? (
+                            <span
+                              className="badge bg-fuchsia-100 text-fuchsia-700 ml-1"
+                              title={`أُسند يوم بدل بتاريخ ${r.comp_off} — احذفه من بطاقة الموظف لتغيير الخيار`}
+                            >
+                              بدل: {r.comp_off}
+                            </span>
+                          ) : (
+                            <span className="inline-flex gap-1 mr-1 align-middle">
+                              <button
+                                className={`!py-1 !px-2 text-xs rounded-md border ${
+                                  r.holiday_work_choice === "comp"
+                                    ? "border-fuchsia-400 bg-fuchsia-50 text-fuchsia-700"
+                                    : "border-slate-200 text-slate-500"
+                                }`}
+                                disabled={choiceBusy === r.employee_id}
+                                title={`اختر «يوم بدل»: ساعات اليوم عادية، ويُمنح ${cfg.weekend_allow || 62} كيوم راحة`}
+                                onClick={() => chooseHoliday(r, "comp")}
+                              >
+                                🎁 بدل
+                              </button>
+                              <button
+                                className={`!py-1 !px-2 text-xs rounded-md border ${
+                                  r.holiday_work_choice !== "comp"
+                                    ? "border-amber-400 bg-amber-50 text-amber-700"
+                                    : "border-slate-200 text-slate-500"
+                                }`}
+                                disabled={choiceBusy === r.employee_id}
+                                title={`اختر «نقدي»: يُدفع ${cfg.weekend_allow || 62} + الساعات ×1.5`}
+                                onClick={() => chooseHoliday(r, "money")}
+                              >
+                                💰 نقدي
+                              </button>
+                            </span>
+                          )}
+                        </>
+                      )}
                     </td>
                   </tr>
                   );
@@ -377,14 +558,15 @@ export default function Attendance({ toast }: { toast: Toast }) {
                 <th className="th">تأخير</th>
                 <th className="th">إضافي</th>
                 <th className="th">أيام غياب</th>
+                <th className="th">عطلة رسمية / بدل</th>
               </tr>
             </thead>
             <tbody>
               {loadingM ? (
-                <TableSkeleton rows={5} cols={6} />
+                <TableSkeleton rows={5} cols={7} />
               ) : byEmp.length === 0 ? (
                 <tr>
-                  <td className="td text-center text-slate-400 py-6" colSpan={6}>
+                  <td className="td text-center text-slate-400 py-6" colSpan={7}>
                     لا أيام محسوبة لهذا الشهر بعد.
                   </td>
                 </tr>
@@ -398,6 +580,13 @@ export default function Attendance({ toast }: { toast: Toast }) {
                   const worked = rows.reduce((a, r) => a + r.worked_min, 0);
                   const late = rows.reduce((a, r) => a + r.late_min, 0);
                   const ot = rows.reduce((a, r) => a + r.overtime_min, 0);
+                  const holWork = rows.filter(
+                    (r) => r.holiday && !!r.first_in && !r.absent,
+                  );
+                  const compDays = rows.filter(
+                    (r) => r.status === "leave" && r.leave_type === "comp",
+                  );
+                  const affected = holWork.length + compDays.length;
                   const empId = rows[0]?.employee_id;
                   const name = empNames[empId] || `موظف #${empId}`;
                   return (
@@ -420,6 +609,44 @@ export default function Attendance({ toast }: { toast: Toast }) {
                         )}
                       </td>
                       <td className="td">{absent}</td>
+                      <td className="td">
+                        {affected === 0 ? (
+                          "—"
+                        ) : (
+                          <span className="inline-flex flex-wrap items-center gap-1">
+                            {holWork.length > 0 && (
+                              <span className="badge bg-violet-100 text-violet-700">
+                                دوام عطلة: {holWork.length}
+                              </span>
+                            )}
+                            {compDays.length > 0 && (
+                              <span className="badge bg-fuchsia-100 text-fuchsia-700">
+                                بدل: {compDays.length}
+                              </span>
+                            )}
+                            <button
+                              className="btn-ghost !py-0.5 !px-1.5 text-xs"
+                              title="اشرح لي هذه الأيام: لماذا صارت عطلة/بدلاً وعن أي يوم"
+                              aria-label={`معلومات أيام العطلة ${name}`}
+                              onClick={() =>
+                                setInfoDay({
+                                  row: {
+                                    name,
+                                    worked_min: (holWork[0] ?? compDays[0]).worked_min,
+                                    holiday_work_choice:
+                                      (holWork[0] ?? compDays[0]).holiday_work_choice,
+                                    status: (holWork[0] ?? compDays[0]).status,
+                                    leave_type: (holWork[0] ?? compDays[0]).leave_type,
+                                  },
+                                  date: (holWork[0] ?? compDays[0]).date,
+                                })
+                              }
+                            >
+                              ⓘ
+                            </button>
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   );
                 })
@@ -444,6 +671,36 @@ export default function Attendance({ toast }: { toast: Toast }) {
             load();
             loadDaily();
             listEmployees().then(setEmps).catch(() => {});
+          }}
+        />
+      )}
+
+      {/* نافذة «يوم بدل»: إسناد عطلة تعويضية عن دوام في عطلة رسمية */}
+      {compOff && (
+        <CompOffModal
+          row={compOff}
+          holidayDate={dailyDate}
+          holidays={holidays}
+          weekendAllow={Number(cfg.weekend_allow || 62)}
+          toast={toast}
+          onClose={() => setCompOff(null)}
+          onSaved={() => {
+            load();
+            loadDaily();
+          }}
+        />
+      )}
+
+      {/* نافذة معلومات: لماذا صار اليوم عطلة/بدلاً وعن أي يوم */}
+      {infoDay && (
+        <HolidayInfoModal
+          row={infoDay.row}
+          date={infoDay.date}
+          weekendAllow={Number(cfg.weekend_allow || 62)}
+          onClose={() => setInfoDay(null)}
+          onAssign={() => {
+            if (infoDay.assignRow) setCompOff(infoDay.assignRow);
+            setInfoDay(null);
           }}
         />
       )}
@@ -625,7 +882,8 @@ export function EditDayModal({
           <p className="col-span-2 text-[11px] text-slate-400 leading-relaxed">
             أمثلة: نسي الدخول — ضع وقت حضوره الحقيقي؛ نسي الخروج — اترك وقت
             الانصراف فارغاً ليُؤخذ آخر خروج محسوب؛ أو اضبط الوقتين معاً إذا لم
-            يعمل الجهاز.
+            يعمل الجهاز. لدوام يعبر منتصف الليل (مثل 22:00 ← 02:00) اجعل وقت
+            الانصراف أصغر من وقت الحضور — يُنسب ليوم الغد بحدٍّ أقصى 14 ساعة.
           </p>
         </div>
       )}
@@ -733,6 +991,213 @@ export function EditDayModal({
         <button className="btn-primary" onClick={submit} disabled={busy}>
           {busy ? "جارٍ الحفظ…" : "💾 حفظ"}
         </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** نافذة «يوم بدل» — عطلة تعويضية عن دوام الموظف في عطلة رسمية.
+ *  تُشرح الخياران (نقدي / يوم بدل) كما في الإعدادات، ثم يُسند تاريخ يوم
+ *  البدل (يمكن أن يكون في الشهر التالي) فيُسجَّل عطلة تعويضية مدفوعة
+ *  بأجر يوم العطلة (62). */
+export function CompOffModal({
+  row,
+  holidayDate,
+  holidays,
+  weekendAllow,
+  toast,
+  onClose,
+  onSaved,
+}: {
+  row: DailyRow;
+  holidayDate: string;
+  holidays: Holiday[];
+  weekendAllow: number;
+  toast: Toast;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  // الافتراضي: أول يوم بعد العطلة (غالباً الشهر التالي) — يعدّله المسؤول
+  const defaultDate = (() => {
+    const d = new Date(`${holidayDate}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    return isoLocal(d);
+  })();
+  // الحد الأدنى للتاريخ: اليوم التالي لعطلة العمل (لا يصح بدل قبل يومها أو في يومها)
+  const minDate = defaultDate;
+  const [compDate, setCompDate] = useState(defaultDate);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!compDate) return toast("اختر تاريخ يوم البدل", "err");
+    if (compDate <= holidayDate)
+      return toast(
+        `يوم البدل يجب أن يكون بعد تاريخ العطلة ${holidayDate} (يوم استراحة في المستقبل)`,
+        "err",
+      );
+    setBusy(true);
+    try {
+      await assignCompOff(row.employee_id, holidayDate, compDate);
+      toast(`أُسند يوم بدل بتاريخ ${compDate} — يُدفع له ${weekendAllow} ✅`);
+      onSaved();
+      onClose();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const holidaysNext = holidays.filter((h) => h.date > holidayDate).slice(0, 3);
+
+  return (
+    <Modal onClose={onClose} title="🎁 يوم بدل (عطلة تعويضية)" panelClass="max-w-md">
+      <div className="text-sm text-slate-500 -mt-1">
+        <b>{row.name}</b> دوّم يوم <b className="font-mono">{holidayDate}</b> — وقد
+        كان <b>عطلة رسمية</b>.
+      </div>
+
+      {/* شرح الخيارين (يُختاران من صف اليوم في التقرير اليومي) */}
+      <div className="space-y-2 text-xs leading-relaxed">
+        <div className="p-2.5 rounded-lg border border-slate-200 bg-slate-50">
+          <b>الخيار الأول — نقدي:</b> يُدفع له أجر يوم العطلة ({weekendAllow}) زائد
+          ساعات عمله ×1.5 × سعر الساعة، بدل أجر الساعات العادي لذلك اليوم، في راتبه
+          مباشرةً (زر «💰 نقدي» بجانب صف اليوم).
+        </div>
+        <div className="p-2.5 rounded-lg border border-fuchsia-200 bg-fuchsia-50">
+          <b>الخيار الثاني — يوم بدل:</b> تُحتسب له ساعات اليوم عادياً، ويُمنح
+          <b> يوماً بديلاً إجازةً مدفوعة</b> بأجر يوم العطلة ({weekendAllow}) — يمكن أن
+          يكون في الشهر التالي. اختر تاريخه أدناه.
+        </div>
+      </div>
+
+      <div>
+        <label className="label" htmlFor="comp-date">
+          تاريخ يوم البدل (يجب أن يكون بعد العطلة)
+        </label>
+        <input
+          id="comp-date"
+          type="date"
+          className="input !w-52"
+          value={compDate}
+          min={minDate}
+          onChange={(e) => setCompDate(e.target.value)}
+        />
+        <p className="text-[11px] text-slate-400 mt-1">
+          يوم استراحة في <b>مستقبل</b> بدلاً من دوام يوم العطلة — لا يُخصم من رصيد
+          الإجازات السنوية، ويظهر في الحضور كـ«عطلة تعويضية (يوم بدل)» مع ملاحظة
+          «بدلاً من دوام عطلة رسمية {holidayDate}»، ويُدفع له أجر يوم العطلة.
+        </p>
+      </div>
+
+      {holidaysNext.length > 0 && (
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          أعياد قادمة: {holidaysNext.map((h) => `${h.date} (${h.name})`).join(" · ")}
+        </p>
+      )}
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button className="btn-ghost" onClick={onClose}>
+          إلغاء
+        </button>
+        <button className="btn-primary" onClick={submit} disabled={busy}>
+          {busy ? "جارٍ الإسناد…" : "🎁 إسناد يوم البدل"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** نافذة معلومات ليوم دوام في عطلة رسمية: تشرح لماذا هذا اليوم مؤثّر،
+ *  والخيار المختار له، وكيف يُحتسب، وعن أي يوم صار بدلاً إن أُسند. */
+export function HolidayInfoModal({
+  row,
+  date,
+  weekendAllow,
+  onClose,
+  onAssign,
+}: {
+  row: HolidayInfoRow;
+  date: string;
+  weekendAllow: number;
+  onClose: () => void;
+  onAssign: () => void;
+}) {
+  const isComp = row.holiday_work_choice === "comp";
+  const isCompLeave = row.status === "leave" && row.leave_type === "comp";
+  const hours = (row.worked_min / 60).toFixed(2);
+  return (
+    <Modal onClose={onClose} title="ⓘ معلومات يوم العطلة الرسمية" panelClass="max-w-md">
+      <div className="space-y-3 text-sm leading-relaxed">
+        {isCompLeave ? (
+          <div className="p-3 rounded-lg border border-fuchsia-200 bg-fuchsia-50">
+            يوم <b className="font-mono">{date}</b> هو <b>🎁 عطلة تعويضية (يوم بدل)</b>
+            {" "}لـ<b>{row.name}</b>
+            {row.comp_for ? (
+              <>
+                {" "}بدلاً من دوامه في عطلة <b className="font-mono">{row.comp_for}</b>.
+              </>
+            ) : (
+              <> — بدل دوامه في عطلة رسمية.</>
+            )}{" "}
+            يُدفع له أجر يوم العطلة (<b>{weekendAllow}</b>) ولا يُخصم من رصيد الإجازات.
+          </div>
+        ) : (
+          <>
+            <div className="p-3 rounded-lg border border-violet-200 bg-violet-50">
+              <b>{row.name}</b> سجّل دواماً يوم{" "}
+              <b className="font-mono">{date}</b>، وهذا التاريخ <b>عطلة رسمية</b> مسجّلة
+              في النظام — لذلك يُعامل معاملة خاصة (لا كيوم دوام عادي).
+            </div>
+
+            <div>
+              <div className="text-xs text-slate-500 mb-1">
+                الخيار المختار الآن لهذا الموظف:
+              </div>
+              {isComp ? (
+                <div className="p-3 rounded-lg border border-fuchsia-300 bg-fuchsia-50">
+                  <b>🎁 يوم بدل</b> — تُحتسب ساعات هذا اليوم <b>عادياً</b> (×1)، ويُمنح
+                  الموظف <b>يوماً راحة تعويضياً مدفوعاً</b> بأجر يوم العطلة (
+                  {weekendAllow})، يمكن أن يكون <b>في الشهر التالي</b>.
+                  {row.comp_off ? (
+                    <div className="mt-1 text-fuchsia-700">
+                      ✅ أُسند يوم البدل بتاريخ{" "}
+                      <b className="font-mono">{row.comp_off}</b> — فيُحتسب هناك{" "}
+                      {weekendAllow} ويظهر «عطلة تعويضية».
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-fuchsia-700">
+                      ⏳ لم يُسند بعد — يُنبّهك الجرس حتى تمنحه يوماً بديلاً عبر زر «🎁 يوم بدل».
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg border border-amber-300 bg-amber-50">
+                  <b>💰 نقدي</b> — يُدفع للموظف في راتبه: <b>{weekendAllow}</b> (أجر يوم
+                  العطلة) + <b>{hours} سا</b> × 1.5 × سعر الساعة، <b>بدل</b> أجر ساعاته
+                  العادي لذلك اليوم. تظهر في الراتب تحت «دوام في عطلة رسمية».
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="text-xs text-slate-500 leading-relaxed">
+          يمكنك تغيير الخيار من الأزرار بجانب صف اليوم في التقرير اليومي
+          (<b>💰 نقدي</b> / <b>🎁 بدل</b>). إن أُسند يوم بدل فلا يمكن تغيير الخيار
+          إلا بعد حذف يوم البدل من بطاقة الموظف.
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          {isComp && !row.comp_off && (
+            <button className="btn-primary" onClick={onAssign}>
+              🎁 إسناد يوم البدل
+            </button>
+          )}
+          <button className="btn-ghost" onClick={onClose}>
+            إغلاق
+          </button>
+        </div>
       </div>
     </Modal>
   );

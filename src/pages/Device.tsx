@@ -191,9 +191,23 @@ export default function Device({ toast }: { toast: Toast }) {
             />
           </div>
         )}
-        <p className="text-xs text-slate-500 mt-3">
-          النظام يتحقق من مطابقة ساعة جهاز البصمة للمنطقة الزمنية المحددة (قابلة للتغيير من
-          الإعدادات) ويتيح الضبط المباشر.
+        {tc &&
+          !tc.in_sync &&
+          Math.abs(tc.diff_minutes) >= 50 &&
+          Math.abs(tc.diff_minutes) <= 70 && (
+            <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-300 text-sm text-amber-800 leading-relaxed">
+              ⏰ الفرق ساعة تقريباً — غالباً بسبب تغيير التوقيت
+              الصيفي/الشتوي في منطقتك. اضغط «ضبط الساعة الآن» لمحاذاة الجهاز، أو
+              فعّل «تصحيح ساعة الجهاز تلقائياً» من الإعدادات ليُصحَّح مع كل
+              مزامنة.
+            </div>
+          )}
+        <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+          ساعة الجهاز تُضبط على توقيت <b>{cfg.timezone || "Asia/Jerusalem"}</b>{" "}
+          — وهو نفس توقيت احتساب <b>الوقت المفروض</b> للدوام (البداية والنهاية
+          والتأخير). التصحيح التلقائي يعمل مع كل مزامنة (كل{" "}
+          {cfg.auto_sync_min || "5"} دقائق) فيُصحَّح انحراف التوقيت الصيفي/الشتوي
+          فور حدوثه.
         </p>
       </div>
     </div>

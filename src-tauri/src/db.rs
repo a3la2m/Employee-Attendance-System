@@ -109,6 +109,63 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             seen        INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_notifications_seen ON notifications(seen);
+
+        -- الورديات: ساعات الدوام (بداية/نهاية + الساعات الأساسية + الاستراحة)
+        -- تُعرّف مرة وتُسنَد للموظفين. الوردية الرئيسية (is_default=1) هي التي
+        -- يرثها أي موظف غير مسنَد لوردية. الوردية غير المفعّلة (active=0) مهجورة
+        -- (تظهر في السجل للتوثيق لكن لا تُسنَد لموظفين جدد).
+        CREATE TABLE IF NOT EXISTS shifts (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            work_start  TEXT NOT NULL DEFAULT '09:00',   -- HH:MM
+            work_end    TEXT NOT NULL DEFAULT '17:30',   -- HH:MM
+            daily_hours REAL NOT NULL DEFAULT 8.5,       -- ساعات الدوام الأساسية
+            break_min   INTEGER NOT NULL DEFAULT 30,     -- الاستراحة القياسية (دقائق)
+            is_default  INTEGER NOT NULL DEFAULT 0,      -- الوردية الرئيسية (واحدة فقط)
+            active      INTEGER NOT NULL DEFAULT 1,      -- 0 = مهجورة
+            created_at  TEXT NOT NULL DEFAULT '',
+            updated_at  TEXT NOT NULL DEFAULT ''
+        );
+
+        -- دفع الرواتب: حالة «مدفوع» الوحيدة في النظام (الأرشفة تجميد أرقام فقط).
+        -- صف واحد لكل (موظف، شهر) — إعادة التعليم تستبدل السجل ولا تكرّره.
+        CREATE TABLE IF NOT EXISTS salary_payments (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            period      TEXT NOT NULL,                 -- YYYY-MM
+            net         REAL NOT NULL DEFAULT 0,       -- الصافي المدفوع وقت التسجيل
+            method      TEXT,                          -- نقدي | تحويل مصرفي | شيك | أخرى
+            note        TEXT,
+            paid_at     TEXT NOT NULL,                 -- ISO — تاريخ التعليم كمدفوع
+            UNIQUE(employee_id, period)
+        );
+
+        -- لقطة إعدادات طباعة القسيمة ونسبها لحظة الطباعة أو لحظة الدفع —
+        -- تبقى القسيمة قابلة لإثبات ما طُبع فعلاً حتى لو تغيّرت الإعدادات لاحقاً.
+        CREATE TABLE IF NOT EXISTS payslip_snapshots (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            period      TEXT NOT NULL,                 -- YYYY-MM
+            rate        REAL NOT NULL DEFAULT 0,       -- سعر الساعة الأساسي لحظتها
+            ot_mult     REAL NOT NULL DEFAULT 1.5,     -- معامل ساعة الإضافي
+            p_work      REAL NOT NULL DEFAULT 0,       -- نسب البدلات الثلاثة (%)
+            p_risk      REAL NOT NULL DEFAULT 0,
+            p_bonus     REAL NOT NULL DEFAULT 0,
+            basic       REAL NOT NULL DEFAULT 0,       -- الأرقام المطبوعة لحظتها
+            overtime    REAL NOT NULL DEFAULT 0,
+            weekend_pay REAL NOT NULL DEFAULT 0,
+            allowances  REAL NOT NULL DEFAULT 0,
+            holiday_work REAL NOT NULL DEFAULT 0,
+            comp_off    REAL NOT NULL DEFAULT 0,
+            share_work  REAL NOT NULL DEFAULT 0,       -- حصص البدلات الثلاثة المقطوعة
+            share_risk  REAL NOT NULL DEFAULT 0,
+            share_bonus REAL NOT NULL DEFAULT 0,
+            net         REAL NOT NULL DEFAULT 0,       -- الصافي (لا يتغير بالتقسيم)
+            printed_at  TEXT NOT NULL,                 -- ISO
+            enabled     INTEGER NOT NULL DEFAULT 1,    -- هل كان التقسيم مفعلاً وقتها؟
+            sheet       TEXT,                          -- نسخة JSON مجمّدة من القسيمة وقتها
+            UNIQUE(employee_id, period)
+        );
         "#,
     )?;
 
@@ -137,6 +194,21 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     // أزرار اليوم في شاشة الحضور: إلغاء خصم الاستراحة / إزالة بدل الفطور
     migrate_column(conn, "attendance_days", "no_break", "INTEGER NOT NULL DEFAULT 0")?;
     migrate_column(conn, "attendance_days", "no_meal", "INTEGER NOT NULL DEFAULT 0")?;
+    // اليوم التعويضي: التاريخ الذي يُعوّض عطلة رسمية دُوّم فيها (زر «يوم بدل»)
+    migrate_column(conn, "leaves", "comp_for_date", "TEXT")?;
+    // إجازة صنعها المسؤول صراحة ليوم له بصمات (لا تُلغى تلقائياً بالدوام)
+    migrate_column(conn, "leaves", "keep_punches", "INTEGER NOT NULL DEFAULT 0")?;
+    // خيار تعويض الدوام في عطلة رسمية لذلك اليوم/الموظف: 'money' (نقدي،
+    // الافتراضي) أو 'comp' (يوم بدل). يُضبط من شاشة الحضور لكل يوم على حدة.
+    migrate_column(conn, "attendance_days", "holiday_work_choice", "TEXT")?;
+    // الوردية المسنَدة للموظف (NULL = يرث الوردية الرئيسية)
+    migrate_column(conn, "employees", "shift_id", "INTEGER")?;
+    // صلاحية الموظف على جهاز البصمة: 0 = عادي، 6 = مدير، 14 = أدمن كامل (سوبر أدمن)
+    migrate_column(conn, "employees", "device_privilege", "INTEGER NOT NULL DEFAULT 0")?;
+    // لقطة القسيمة: هل كان التقسيم مفعلاً وقت الحفظ + نسخة JSON كاملة مجمّدة
+    // (أيام الجدول والبنود والإعدادات) لإعادة إنتاج الطباعة حرفياً لاحقاً
+    migrate_column(conn, "payslip_snapshots", "enabled", "INTEGER NOT NULL DEFAULT 1")?;
+    migrate_column(conn, "payslip_snapshots", "sheet", "TEXT")?;
     Ok(())
 }
 
@@ -199,6 +271,30 @@ pub fn seed_defaults(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES (?1, ?2)",
             [k, v],
+        )?;
+    }
+
+    // وردية رئيسية افتراضية واحدة — تُبنى من الإعداد العام (work_start/work_end/
+    // daily_hours/break_min). فقط إن لم توجد أي وردية إطلاقاً.
+    let shift_count: i64 = conn.query_row("SELECT COUNT(*) FROM shifts", [], |r| r.get(0))?;
+    if shift_count == 0 {
+        let get = |k: &str, d: &str| -> String {
+            conn.query_row("SELECT value FROM settings WHERE key=?1", [k], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap_or_else(|_| d.to_string())
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO shifts(name,work_start,work_end,daily_hours,break_min,is_default,active,created_at,updated_at)
+             VALUES('الوردية الرئيسية',?1,?2,?3,?4,1,1,?5,?5)",
+            rusqlite::params![
+                get("work_start", "09:00"),
+                get("work_end", "17:30"),
+                get("daily_hours", "8.5").parse::<f64>().unwrap_or(8.5),
+                get("break_min", "30").parse::<i64>().unwrap_or(30),
+                now,
+            ],
         )?;
     }
     Ok(())

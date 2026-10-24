@@ -6,13 +6,23 @@ import {
   getStorageInfo,
   setStorageDir,
   backupNow,
+  exportStorageFiles,
   restoreSettings,
   holidaysList,
   holidayAdd,
   holidayDelete,
   accrueLeaveNow,
+  listShifts,
+  upsertShift,
+  setDefaultShift,
+  deleteShift,
+  assignEmployeesToShift,
+  listEmployees,
+  reassignShiftRecompute,
+  clearDemoData,
 } from "../lib/api";
-import type { Holiday, Settings, StorageInfo } from "../lib/types";
+import Modal from "../components/Modal";
+import type { Employee, Holiday, Settings, Shift, StorageInfo } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
 
@@ -20,25 +30,54 @@ type Toast = (m: string, t?: "ok" | "err") => void;
 const PAYROLL_KEYS = [
   {
     k: "daily_hours",
-    label: "ساعات الدوام الأساسية (منها تُخصم الاستراحة — ما زاد عنها إضافي)",
+    label: "ساعات الدوام الأساسية الافتراضية (تُضبط فعلياً لكل وردية — هذه للوردية الرئيسية عند إنشائها)",
     step: "0.25",
   },
-  { k: "break_min", label: "فترة الخصم (استراحة) بالدقائق", step: "1" },
+  { k: "break_min", label: "فترة الخصم (استراحة) الافتراضية بالدقائق (تُضبط لكل وردية)", step: "1" },
   { k: "hourly_rate", label: "سعر الساعة", step: "0.5" },
   { k: "meal_allow", label: "بدل الفطور اليومي", step: "0.5" },
   { k: "transport_allow", label: "بدل المواصلات اليومي", step: "0.5" },
   { k: "overtime_rate_mult", label: "مضاعف العمل الإضافي", step: "0.1" },
-  { k: "grace_late_min", label: "مهلة التأخير (دقيقة) — للتنبيهات فقط", step: "1" },
+  { k: "grace_late_min", label: "مهلة التأخير (دقيقة) — يُطرح من التأخير ويُنبَّه على ما زاد", step: "1" },
   { k: "weekend_allow", label: "بدل العطلة (62 — مبلغ الأسبوع في الطريقة الأسبوعية، أو مبلغ كل يوم عطلة في الطريقة القديمة)", step: "1" },
 ];
 
 const TIME_KEYS = [
-  { k: "work_start", label: "بداية الدوام (للتنبيهات فقط)", type: "text", ph: "HH:MM" },
-  { k: "work_end", label: "نهاية الدوام (للتنبيهات فقط)", type: "text", ph: "HH:MM" },
-  { k: "timezone", label: "المنطقة الزمنية", type: "text", ph: "Asia/Jerusalem" },
   { k: "weekend_days", label: "عطلة الأسبوع (4=جمعة — الأسبوع من السبت إلى الجمعة)", type: "text", ph: "4" },
   { k: "auto_sync_min", label: "مزامنة تلقائية كل (دقيقة)", type: "number", ph: "5" },
 ];
+
+/** المناطق الزمنية المتاحة: [المعرّف IANA، الوصف العربي]. */
+const TZ_ZONES: [string, string][] = [
+  ["Asia/Jerusalem", "فلسطين — القدس"],
+  ["Asia/Gaza", "فلسطين — غزة"],
+  ["Asia/Amman", "الأردن — عمّان"],
+  ["Asia/Riyadh", "السعودية — الرياض"],
+  ["Asia/Baghdad", "العراق — بغداد"],
+  ["Asia/Kuwait", "الكويت"],
+  ["Asia/Qatar", "قطر"],
+  ["Asia/Dubai", "الإمارات — دبي"],
+  ["Asia/Manama", "البحرين"],
+  ["Asia/Muscat", "عُمان"],
+  ["Asia/Aden", "اليمن — عدن"],
+  ["Asia/Damascus", "سوريا — دمشق"],
+  ["Asia/Beirut", "لبنان — بيروت"],
+  ["Asia/Tehran", "إيران — طهران"],
+  ["Asia/Istanbul", "تركيا — إسطنبول"],
+  ["Africa/Cairo", "مصر — القاهرة"],
+  ["Africa/Tripoli", "ليبيا — طرابلس"],
+  ["Africa/Khartoum", "السودان — الخرطوم"],
+  ["Africa/Tunis", "تونس"],
+  ["Africa/Algiers", "الجزائر"],
+  ["Africa/Casablanca", "المغرب — الدار البيضاء"],
+  ["Africa/Nairobi", "كينيا — نيروبي"],
+  ["Europe/London", "بريطانيا — لندن"],
+  ["UTC", "غرينتش (UTC)"],
+];
+
+/** خيارات القائمة: تُدرج قيمة حالية غير مدرجة (نسيان إدخال يدوي قديم). */
+const tzOptions = (v: string): [string, string][] =>
+  TZ_ZONES.some(([id]) => id === v) ? TZ_ZONES : [[v, v], ...TZ_ZONES];
 
 export default function SettingsPage({ toast }: { toast: Toast }) {
   const [cfg, setCfg] = useState<Settings>({});
@@ -53,6 +92,25 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   const [hBusy, setHBusy] = useState(false);
   // الاحتساب الشهري لأرصدة الإجازات السنوية
   const [accrualBusy, setAccrualBusy] = useState(false);
+  // الورديات
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [shiftBusy, setShiftBusy] = useState(false);
+  const EMPTY_SHIFT: Shift = {
+    id: 0,
+    name: "",
+    work_start: "09:00",
+    work_end: "17:30",
+    daily_hours: 8.5,
+    break_min: 30,
+    is_default: false,
+    active: true,
+    employee_count: 0,
+  };
+  const [shiftForm, setShiftForm] = useState<Shift>(EMPTY_SHIFT);
+  // الإسناد الجماعي: الوردية المفتوحة للنافذة + قائمة الموظفين + المختارون
+  const [assignShift, setAssignShift] = useState<Shift | null>(null);
+  const [allEmployees, setAllEmployees] = useState<Employee[]>([]);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
 
   const load = async () => {
     try {
@@ -60,17 +118,111 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
     } catch (e) {
       toast(String(e), "err");
     }
-    getStorageInfo().then(setStorage).catch(() => {});
-    holidaysList().then(setHolidays).catch(() => {});
-  };
-
-  useEffect(() => {
-    load();
     import("@tauri-apps/plugin-autostart")
       .then((m) => m.isEnabled())
       .then(setAutostart)
       .catch(() => {});
+    getStorageInfo().then(setStorage).catch(() => {});
+    holidaysList().then(setHolidays).catch(() => {});
+    listShifts().then(setShifts).catch(() => {});
+  };
+
+  useEffect(() => {
+    load();
   }, []);
+
+  const saveShift = async () => {
+    setShiftBusy(true);
+    try {
+      await upsertShift(shiftForm);
+      setShifts(await listShifts());
+      setShiftForm(EMPTY_SHIFT);
+      toast("حُفظت الوردية ✅ — اضغط «إعادة احتساب الحضور» لتطبيقها على الأيام السابقة", "ok");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const makeDefault = async (id: number) => {
+    setShiftBusy(true);
+    try {
+      await setDefaultShift(id);
+      setShifts(await listShifts());
+      toast("صارت الوردية الرئيسية ✅");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const removeShift = async (id: number) => {
+    if (!confirm("حذف هذه الوردية؟ الموظفون المسنَدون إليها سيعودون للوردية الرئيسية."))
+      return;
+    setShiftBusy(true);
+    try {
+      await deleteShift(id);
+      setShifts(await listShifts());
+      toast("حُذفت الوردية ✅");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  // فتح نافذة الإسناد الجماعي لوردية: نُحمّل الموظفين ونحدّد المسنَدين إليها مسبقاً
+  const openAssign = async (s: Shift) => {
+    setAssignShift(s);
+    setPicked(new Set());
+    try {
+      const emps = await listEmployees();
+      setAllEmployees(emps);
+      setPicked(new Set(emps.filter((e) => e.shift_id === s.id).map((e) => e.id)));
+    } catch (e) {
+      toast(String(e), "err");
+    }
+  };
+
+  const togglePicked = (id: number) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const saveAssign = async () => {
+    if (!assignShift) return;
+    setShiftBusy(true);
+    try {
+      // المسنَدون الآن = المختارون. ومن كان مسنَداً لهذه الوردية ولم يبقَ مختاراً
+      // نُخرجه (shift_id=NULL → يرث الوردية الرئيسية).
+      const keep = allEmployees.filter((e) => picked.has(e.id)).map((e) => e.id);
+      const remove = allEmployees
+        .filter((e) => e.shift_id === assignShift.id && !picked.has(e.id))
+        .map((e) => e.id);
+      let changed = 0;
+      if (keep.length) {
+        changed += await assignEmployeesToShift(keep, assignShift.id);
+        await reassignShiftRecompute("1900-01-01", "2100-01-01");
+      }
+      if (remove.length) {
+        changed += await assignEmployeesToShift(remove, null);
+        await reassignShiftRecompute("1900-01-01", "2100-01-01");
+      }
+      setShifts(await listShifts());
+      toast(`تم الإسناد ✅ (${changed} موظف) — وأُعيد احتساب الحضور`, "ok");
+      setAssignShift(null);
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setShiftBusy(false);
+    }
+  };
 
   const toggleAutostart = async () => {
     setAutostartBusy(true);
@@ -129,6 +281,65 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
     try {
       const r = await backupNow();
       toast(`تم النسخ الاحتياطي ✅\n${r.db_backup}`, "ok");
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyStorage(false);
+    }
+  };
+
+  // نقل ملفات قاعدة البيانات والإعدادات إلى مجلد يختاره المستخدم (مثال: Google Drive)
+  const moveStorageFiles = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const dir = await open({ directory: true, multiple: false, title: "اختر مجلد نقل ملفات النسخ الاحتياطي" });
+      if (typeof dir === "string") {
+        setBusyStorage(true);
+        const files = await exportStorageFiles(dir);
+        if (files.length === 0) {
+          toast("لم يُنسخ أي ملف", "err");
+          return;
+        }
+        const msg = `تم نقل ${files.length} ملف إلى:\n${dir}\n\nيُفضل إعادة تشغيل التطبيق للتأكد من عمله بعد النقل. هل تريد إعادة التشغيل الآن؟`;
+        if (confirm(msg)) {
+          try {
+          const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+          await getCurrentWebviewWindow().close();
+        } catch {
+          try {
+            const w = (window as any).__TAURI__?.window?.getCurrentWindow?.();
+            await w?.close();
+          } catch {
+            window.close();
+          }
+        }
+        } else {
+          toast("تم النقل بنجاح — يُنصح بإعادة تشغيل البرنامج للتأكد", "ok");
+        }
+      }
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusyStorage(false);
+    }
+  };
+
+  /** حذف الموظفين التجريبيين (9001..9005) وبصماتهم — يُنشأ تلقائياً لأول تشغيل. */
+  const doClearDemo = async () => {
+    if (
+      !confirm(
+        "حذف البيانات التجريبية (5 موظفين وبصماتهم)؟\nلا يُمسّ أي موظف حقيقي.",
+      )
+    )
+      return;
+    setBusyStorage(true);
+    try {
+      const r = await clearDemoData();
+      toast(
+        r.deleted > 0
+          ? `حُذفت ${r.deleted} صفاً من البيانات التجريبية ✅`
+          : "لا توجد بيانات تجريبية للحذف",
+      );
     } catch (e) {
       toast(String(e), "err");
     } finally {
@@ -348,6 +559,22 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
           >
             ♻️ استعادة الإعدادات
           </button>
+          <button
+            className="btn-ghost"
+            onClick={moveStorageFiles}
+            disabled={busyStorage}
+            title="نقل ملفات قاعدة البيانات والإعدادات إلى مجلد آخر (مثل جوجل درايف) مع إمكانية إعادة التشغيل"
+          >
+            📦 نقل الملفات إلى مجلد آخر…
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={doClearDemo}
+            disabled={busyStorage}
+            title="حذف الموظفين التجريبيين (9001..9005) وبصماتهم — تُنشأ لأول تشغيل فقط"
+          >
+            🧹 حذف البيانات التجريبية
+          </button>
         </div>
 
         <div className="mt-3 text-[11px] text-slate-500 leading-relaxed">
@@ -355,7 +582,12 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
           <code className="bg-white px-1 rounded">attendance-backup-YYYYMMDD-HHMMSS.db</code>{" "}
           (لقطة القاعدة بـ VACUUM INTO، ثابتة وآمنة) +{" "}
           <code className="bg-white px-1 rounded">attendance-settings.json</code>{" "}
-          (كل الإعدادات بصيغة JSON). المجلد الأساسي:{" "}
+          (كل الإعدادات بصيغة JSON). «نقل الملفات إلى مجلد آخر» يُنسخ{" "}
+          <code className="bg-white px-1 rounded">attendance.db</code> و
+          <code className="bg-white px-1 rounded">attendance-settings.json</code> و
+          <code className="bg-white px-1 rounded">storage-config.json</code> إلى المجلد
+          المختار ويعرض خيار إعادة تشغيل التطبيق بعد النقل للتأكد من سلامة العملية. المجلد
+          الأساسي:{" "}
           <span className="text-amber-700">{storage?.is_custom ? "مُخصَّص" : "افتراضي في مجلد التطبيق"}</span>.
         </div>
       </div>
@@ -417,10 +649,291 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
         </p>
       </div>
 
+      {/* الورديات */}
+      <div className="card">
+        <h2 className="font-bold mb-1">🗂️ الورديات (ساعات الدوام)</h2>
+        <p className="text-xs text-slate-500 mb-3 leading-relaxed">
+          كل وردية تحدّد <b>بداية ونهاية الدوام</b> و<b>الساعات الأساسية</b> و<b>الاستراحة</b>،
+          ويُسنَد كل موظف إلى ورديته من صفحة «الموظفون». الوردية <b>الرئيسية</b> (⭐) يرثها كل
+          موظف غير مسنَد لوردية. الوردية غير المفعّلة تصبح <b>مهجورة</b> (تبقى في السجل بلا
+          إسناد). الوردية الليلية (نهايتها أصغر من بدايتها مثل 20:00→04:00) تُحتسب تلقائياً
+          عبر منتصف الليل. <b>بعد تغيير وردية اضغط «إعادة احتساب الحضور»</b> في صفحة
+          الحضور لتُطبَّق على الأيام السابقة.
+        </p>
+
+        {/* جدول الورديات */}
+        <div className="overflow-x-auto">
+          <table className="table text-sm">
+            <thead>
+              <tr>
+                <th>الاسم</th>
+                <th>البداية</th>
+                <th>النهاية</th>
+                <th>ساعات/يوم</th>
+                <th>استراحة (د)</th>
+                <th>الموظفون</th>
+                <th>الحالة</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {shifts.map((s) => (
+                <tr key={s.id}>
+                  <td className="font-medium">
+                    {s.name} {s.is_default && <span title="الوردية الرئيسية">⭐</span>}
+                  </td>
+                  <td dir="ltr">{s.work_start}</td>
+                  <td dir="ltr">{s.work_end}</td>
+                  <td>{s.daily_hours}</td>
+                  <td>{s.break_min}</td>
+                  <td>{s.employee_count}</td>
+                  <td>
+                    {s.active ? (
+                      <span className="badge bg-emerald-100 text-emerald-700">مفعّلة</span>
+                    ) : (
+                      <span className="badge bg-slate-200 text-slate-600">مهجورة</span>
+                    )}
+                  </td>
+                  <td>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        className="btn btn-ghost text-xs"
+                        onClick={() => setShiftForm({ ...s })}
+                        disabled={shiftBusy}
+                      >
+                        تعديل
+                      </button>
+                      <button
+                        className="btn btn-ghost text-xs"
+                        onClick={() => openAssign(s)}
+                        disabled={shiftBusy}
+                        title="اختيار الموظفين المسنَدين لهذه الوردية"
+                      >
+                        👥 إسناد موظفين
+                      </button>
+                      {!s.is_default && (
+                        <button
+                          className="btn btn-ghost text-xs"
+                          onClick={() => makeDefault(s.id)}
+                          disabled={shiftBusy}
+                        >
+                          اجعلها الرئيسية
+                        </button>
+                      )}
+                      {shifts.length > 1 && (
+                        <button
+                          className="btn btn-ghost text-xs text-red-600"
+                          onClick={() => removeShift(s.id)}
+                          disabled={shiftBusy}
+                        >
+                          حذف
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* نموذج وردية */}
+        <div className="mt-4 pt-4 border-t border-slate-200">
+          <h3 className="font-bold text-sm mb-2">
+            {shiftForm.id > 0 ? `تعديل «${shiftForm.name}»` : "إضافة وردية جديدة"}
+          </h3>
+          <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="sm:col-span-2">
+              <label className="label">اسم الوردية</label>
+              <input
+                className="input"
+                value={shiftForm.name}
+                onChange={(e) => setShiftForm({ ...shiftForm, name: e.target.value })}
+                placeholder="مثال: وردية صباحية"
+              />
+            </div>
+            <div>
+              <label className="label">بداية الدوام</label>
+              <input
+                type="text"
+                dir="ltr"
+                className="input"
+                placeholder="HH:MM"
+                value={shiftForm.work_start}
+                onChange={(e) => setShiftForm({ ...shiftForm, work_start: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label">نهاية الدوام</label>
+              <input
+                type="text"
+                dir="ltr"
+                className="input"
+                placeholder="HH:MM"
+                value={shiftForm.work_end}
+                onChange={(e) => setShiftForm({ ...shiftForm, work_end: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label">ساعات الدوام الأساسية</label>
+              <input
+                type="number"
+                step="0.25"
+                className="input"
+                value={shiftForm.daily_hours}
+                onChange={(e) =>
+                  setShiftForm({ ...shiftForm, daily_hours: Number(e.target.value) })
+                }
+              />
+            </div>
+            <div>
+              <label className="label">الاستراحة (دقيقة)</label>
+              <input
+                type="number"
+                step="1"
+                className="input"
+                value={shiftForm.break_min}
+                onChange={(e) =>
+                  setShiftForm({ ...shiftForm, break_min: Number(e.target.value) })
+                }
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4 mt-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={shiftForm.active}
+                onChange={(e) => setShiftForm({ ...shiftForm, active: e.target.checked })}
+                className="accent-indigo-600 w-4 h-4"
+              />
+              مفعّلة (إلغاؤها يجعلها مهجورة)
+            </label>
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={shiftForm.is_default}
+                onChange={(e) => setShiftForm({ ...shiftForm, is_default: e.target.checked })}
+                className="accent-indigo-600 w-4 h-4"
+              />
+              اجعلها الوردية الرئيسية
+            </label>
+            <div className="flex gap-2 mr-auto">
+              <button
+                className="btn btn-primary"
+                onClick={saveShift}
+                disabled={shiftBusy || !shiftForm.name.trim()}
+              >
+                {shiftForm.id > 0 ? "حفظ التعديل" : "إضافة الوردية"}
+              </button>
+              {shiftForm.id > 0 && (
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => setShiftForm(EMPTY_SHIFT)}
+                  disabled={shiftBusy}
+                >
+                  إلغاء
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* نافذة الإسناد الجماعي للموظفين */}
+        {assignShift && (
+          <Modal
+            onClose={() => setAssignShift(null)}
+            title={`👥 إسناد موظفين إلى «${assignShift.name}»`}
+            panelClass="max-w-lg"
+          >
+            <p className="text-xs text-slate-500 mb-3">
+              اختر الموظفين الذين يعملون على هذه الوردية. من تُزيله من القائمة يعود
+              للوردية الرئيسية. يُعاد احتساب الحضور تلقائياً بعد الحفظ.
+            </p>
+            <div className="flex items-center justify-between mb-2">
+              <button
+                className="btn btn-ghost text-xs"
+                onClick={() =>
+                  setPicked(
+                    picked.size === allEmployees.length
+                      ? new Set()
+                      : new Set(allEmployees.map((e) => e.id)),
+                  )
+                }
+              >
+                {picked.size === allEmployees.length ? "إلغاء تحديد الكل" : "تحديد الكل"}
+              </button>
+              <span className="text-xs text-slate-400">
+                {picked.size} من {allEmployees.length}
+              </span>
+            </div>
+            <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
+              {allEmployees.length === 0 && (
+                <p className="p-3 text-sm text-slate-400 text-center">لا يوجد موظفون.</p>
+              )}
+              {allEmployees.map((e) => (
+                <label
+                  key={e.id}
+                  className="flex items-center gap-3 px-3 py-2 hover:bg-slate-50 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-indigo-600 w-4 h-4"
+                    checked={picked.has(e.id)}
+                    onChange={() => togglePicked(e.id)}
+                  />
+                  <span className="text-sm font-medium">{e.name}</span>
+                  {!e.active && (
+                    <span className="badge bg-slate-200 text-slate-500 text-[10px]">موقوف</span>
+                  )}
+                  {e.shift_id != null && e.shift_id !== assignShift.id && (
+                    <span className="text-[10px] text-amber-600 mr-auto">
+                      حالياً: {shifts.find((s) => s.id === e.shift_id)?.name ?? "وردية أخرى"}
+                    </span>
+                  )}
+                  {e.shift_id === assignShift.id && (
+                    <span className="text-[10px] text-emerald-600 mr-auto">مسنَد هنا</span>
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setAssignShift(null)}
+                disabled={shiftBusy}
+              >
+                إلغاء
+              </button>
+              <button className="btn btn-primary" onClick={saveAssign} disabled={shiftBusy}>
+                {shiftBusy ? "جارٍ الحفظ…" : "حفظ الإسناد"}
+              </button>
+            </div>
+          </Modal>
+        )}
+      </div>
+
       {/* التوقيت */}
       <div className="card">
         <h2 className="font-bold mb-3">🕐 التوقيت والحضور</h2>
         <div className="grid sm:grid-cols-3 gap-4">
+          <div>
+            <label className="label">
+              المنطقة الزمنية (توقيت الجهاز وحساب الدوام)
+            </label>
+            <select
+              className="input"
+              dir="ltr"
+              value={cfg.timezone || "Asia/Jerusalem"}
+              onChange={(e) => set("timezone", e.target.value)}
+            >
+              {tzOptions(cfg.timezone || "Asia/Jerusalem").map(([id, ar]) => (
+                <option key={id} value={id}>
+                  {ar} — {id}
+                </option>
+              ))}
+            </select>
+          </div>
           {TIME_KEYS.map((f) => (
             <div key={f.k}>
               <label className="label">{f.label}</label>
@@ -435,6 +948,13 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             </div>
           ))}
         </div>
+        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+          🕐 كل ما يُحتسب من <b>الوقت المفروض</b> — بداية الدوام ونهايته
+          والتأخير والانصراف المبكر والإضافي — يُحسب بتوقيت هذه المنطقة، ويُضبط
+          جهاز البصمة على توقيتها نفسه عند كل مزامنة تلقائية (كل{" "}
+          {cfg.auto_sync_min || "5"} دقائق). وعند تغيّر التوقيت الصيفي/الشتوي
+          يُكتشف الفرق ويُصحَّح تلقائياً مع تنبيه على الشاشة.
+        </p>
         <label className="flex items-center gap-2 text-sm font-medium mt-4">
           <input
             type="checkbox"

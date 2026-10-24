@@ -31,6 +31,33 @@ pub struct Employee {
     pub annual_leave_days: f64,
     /// آخر شهر (YYYY-MM) أُضيفت أرصدته — لتستأنف الإضافة من حيث توقفت (يديره النظام).
     pub leave_accrual_month: Option<String>,
+    /// الوردية المسنَدة للموظف — NULL يرث «الوردية الرئيسية» تلقائياً.
+    #[serde(default)]
+    pub shift_id: Option<i64>,
+    /// صلاحية الموظف على جهاز البصمة: 0 = مستخدم عادي، 6 = مدير،
+    /// 14 = أدمن كامل (سوبر أدمن). تُرسل إلى الجهاز عند الحفظ.
+    #[serde(default)]
+    pub device_privilege: i64,
+}
+
+/// وردية دوام: ساعات الدوام الأساسية التي تُحسب عليها أيام الموظف المسنَد إليها.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Shift {
+    pub id: i64,
+    pub name: String,
+    pub work_start: String, // HH:MM
+    pub work_end: String,   // HH:MM
+    /// ساعات الدوام الأساسية (منها الإضافي وما بعدها).
+    pub daily_hours: f64,
+    /// الاستراحة القياسية (دقائق) — تُخصم من أيام الدوام.
+    pub break_min: i64,
+    /// الوردية الرئيسية: يرثها أي موظف غير مسنَد لوردية (واحدة فقط).
+    pub is_default: bool,
+    /// 0 = مهجورة (تبقى في السجل لكن لا تُسنَد لموظفين جدد).
+    pub active: bool,
+    /// عدد الموظفين المسنَدين إليها مباشرة (رقم إعلامي في الواجهة).
+    #[serde(default)]
+    pub employee_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +90,14 @@ pub struct AttendanceDay {
     pub leave_paid: Option<bool>,
     /// تعديل يدوي من المسؤول (لا تمسه إعادة الاحتساب التلقائية).
     pub manual: bool,
+    /// هل تاريخ اليوم عطلة رسمية (أحد أعياد الإعدادات) — يظهر حتى لو دوّم
+    /// فيه الموظف (يوم دوام في عطلة يُدفع بسياسة العمل في العطل الرسمية).
+    #[serde(default)]
+    pub holiday: bool,
+    /// خيار تعويض دوام هذا اليوم في العطلة الرسمية: "money" (نقدي، الافتراضي)
+    /// أو "comp" (يوم بدل). يُضبط من شاشة الحضور لكل موظف/يوم على حدة.
+    #[serde(default)]
+    pub holiday_work_choice: Option<String>,
 }
 
 /// إعدادات الرواتب (من جدول settings).
@@ -117,6 +152,18 @@ pub struct PayrollResult {
     pub unpaid_leave_days: i64,
     /// أيام الإجازات الرسمية (الأعياد) خلال الفترة.
     pub holiday_days: i64,
+    /// أيام دُوّم فيها موظف في عطلة رسمية (سياسة «نقدي»: تُدفع بـ62 +1.5×).
+    #[serde(default)]
+    pub holiday_work_days: i64,
+    /// أجر العمل في العطل الرسمية (السياسة النقدية):62 عن كل يوم + الساعات×1.5.
+    #[serde(default)]
+    pub holiday_work_pay: f64,
+    /// أيام البدل التعويضية (عطلة تعويضية بدل دوام عطلة رسمية).
+    #[serde(default)]
+    pub comp_off_days: i64,
+    /// أجر أيام البدل التعويضية (أجر يوم العطلة =62 عن كل يوم بدل).
+    #[serde(default)]
+    pub comp_off_pay: f64,
     pub late_deduction: f64,
     pub absence_deduction: f64,
     pub net_pay: f64,
@@ -148,4 +195,41 @@ pub struct DeviceInfo {
     pub users: i64,
     pub fingerprints: i64,
     pub records: i64,
+}
+
+/// لقطة إعدادات طباعة القسيمة ونسبها وأرقامها لحظة الطباعة أو لحظة الدفع —
+/// تُحفظ في payslip_snapshots لتبقى القسيمة دليلاً على ما طُبع فعلاً حتى لو
+/// تغيّرت إعدادات الطباعة لاحقاً (سعر الساعة، المعامل، نِسب البدلات الثلاثة).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PayslipSnapshot {
+    pub employee_id: i64,
+    /// YYYY-MM
+    pub period: String,
+    /// سعر الساعة الأساسي وقتها
+    pub rate: f64,
+    /// معامل ساعة الإضافي وقتها
+    pub ot_mult: f64,
+    /// نِسب البدلات الثلاثة (%) — مجموعها 100 وقت الطباعة
+    pub p_work: f64,
+    pub p_risk: f64,
+    pub p_bonus: f64,
+    /// الأرقام المطبوعة وقتها
+    pub basic: f64,
+    pub overtime: f64,
+    pub weekend_pay: f64,
+    pub allowances: f64,
+    pub holiday_work: f64,
+    pub comp_off: f64,
+    /// حصص البدلات الثلاثة المقطوعة فعلاً من المتبقي
+    pub share_work: f64,
+    pub share_risk: f64,
+    pub share_bonus: f64,
+    /// الصافي المستحق (لا يتغيّر بالتقسيم — حارس ضد أي خطأ)
+    pub net: f64,
+    /// هل كان تقسيم الطباعة مفعلاً وقت الحفظ؟ (false = القسيمة طُبعت بنود
+    /// الرواتب المحسوبة كما هي بدون تقسيم قانوني)
+    pub enabled: bool,
+    /// نسخة JSON كاملة مجمّدة من القسيمة وقتها (الأيام + البنود + الإعدادات)
+    /// — تُطبع لاحقاً بالضبط كما كانت حتى لو تغيّر الحضور أو الإعدادات بعدها.
+    pub sheet: Option<String>,
 }

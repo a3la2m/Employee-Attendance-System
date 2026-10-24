@@ -185,11 +185,12 @@ fn notify_tick(app: &tauri::AppHandle) {
         } else {
             String::new()
         };
+        let body = format!("{lines}{more}").trim_end().to_string();
         let _ = app
             .notification()
             .builder()
             .title("🔔 تنبيهات الحضور")
-            .body(format!("{lines}{more}").trim_end().to_string())
+            .body(&body)
             .show();
     }
     if !lates.is_empty() {
@@ -266,6 +267,7 @@ fn sync_once(app: &tauri::AppHandle) {
         Err(e) => {
             log::warn!("auto sync failed: {e}");
             let _ = app.emit("sync", serde_json::json!({"ok": false, "error": e}));
+            // إشعار واحد عند فقد الاتصال بالجهاز، وآخر عند عودته (يتم تتبعه داخل sync_device_internal لاحقاً)
         }
     }
 }
@@ -360,6 +362,13 @@ pub fn run() {
             let dir = storage::resolve_dir(&base);
             std::fs::create_dir_all(&dir)?;
             let conn = db::open(&dir.join(storage::MAIN_DB))?;
+            // بيانات تجريبية لأول تشغيل: تملأ لوحة التحكم إذا كانت القاعدة فارغة
+            // تماماً (تتوقف تلقائياً إذا وُجد موظفون حقيقيون).
+            match commands::seed_demo_if_empty(&conn) {
+                Ok(n) if n > 0 => log::info!("demo data: {n} employees seeded"),
+                Ok(_) => {}
+                Err(e) => log::warn!("demo seed failed: {e}"),
+            }
             // تنظيف فوري: أيام «غياب» مستقبلية أُنشئت قبل الإصلاح (لا غياب لأيام
             // لم تأتِ بعد) — لا يتوقّف على نجاح الاتصال بالجهاز.
             let cleaned_future = commands::cleanup_future_absences(&conn);
@@ -370,6 +379,16 @@ pub fn run() {
                 db: Mutex::new(conn),
                 base,
             });
+
+            // إعادة احتساب فورية عند الإقلاع (لا تتوقّف على نجاح الاتصال
+            // بالجهاز) — تشمل إلغاء الإجازات التي دوّم فيها الموظف فعلياً،
+            // وتحديث صف اليوم وترحيل التاريخ إلى اليوم المحلي الجديد.
+            if let Some(state) = app.try_state::<AppState>() {
+                match commands::recompute_recent(&state, 60) {
+                    Ok(n) => log::info!("startup recompute: {n} rows"),
+                    Err(e) => log::warn!("startup recompute failed: {e}"),
+                }
+            }
 
             // أيقونة شريط الإشعارات
             if let Err(e) = build_tray(app.handle()) {
@@ -399,14 +418,24 @@ pub fn run() {
             commands::get_storage_info,
             commands::set_storage_dir,
             commands::backup_now,
+            commands::export_storage_files,
             commands::restore_settings,
             commands::list_employees,
             commands::upsert_employee,
             commands::delete_employee,
+            commands::list_shifts,
+            commands::upsert_shift,
+            commands::set_default_shift,
+            commands::delete_shift,
+            commands::assign_employees_to_shift,
+            commands::reassign_shift_recompute,
             commands::device_info,
             commands::sync_device,
             commands::push_user_to_device,
+            commands::get_next_device_pin,
             commands::disable_user_on_device,
+            commands::set_device_privilege,
+            commands::clear_demo_data,
             commands::employee_punches,
             commands::check_time_sync,
             commands::fix_device_time,
@@ -425,6 +454,8 @@ pub fn run() {
             commands::holidays_list,
             commands::holiday_add,
             commands::holiday_delete,
+            commands::assign_comp_off,
+            commands::set_holiday_work_choice,
             commands::dashboard,
             commands::set_company_logo,
             commands::read_logo_data_uri,
@@ -437,6 +468,11 @@ pub fn run() {
             commands::present_now,
             commands::payroll_months,
             commands::employee_payroll_history,
+            commands::mark_salary_paid,
+            commands::unmark_salary_paid,
+            commands::salary_payments,
+            commands::save_payslip_snapshot,
+            commands::payslip_snapshots,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
