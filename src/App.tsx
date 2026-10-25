@@ -8,6 +8,7 @@ import Reports from "./pages/Reports";
 import Device from "./pages/Device";
 import Settings from "./pages/Settings";
 import Toast from "./components/Toast";
+import { useConfirm } from "./components/Confirm";
 import { listen } from "@tauri-apps/api/event";
 import {
   listNotifications,
@@ -80,6 +81,8 @@ export default function App() {
   const unseen = notifs.filter((n) => !n.seen).length;
 
   const toast = (m: string, t: "ok" | "err" = "ok") => setToastMsg({ m, t });
+  // تأكيد «نعم/لا» داخلي (بديل window.confirm — لا يستجيب للنقرة العابرة)
+  const confirm = useConfirm();
 
   /** نقل المستخدم إلى سجل الحضور على اليوم ذي الصلة بالتنبيه. */
   const gotoDay = (n: Notification) => {
@@ -125,8 +128,12 @@ export default function App() {
     }
   };
 
-  const wipeNotifs = () => {
-    if (!window.confirm("مسح كل التنبيهات المحفوظة نهائياً؟")) return;
+  const wipeNotifs = async () => {
+    const ok = await confirm("مسح كل التنبيهات المحفوظة نهائياً؟", {
+      title: "مسح التنبيهات",
+      yes: "نعم، امسح الكل",
+    });
+    if (!ok) return;
     setNotifs([]);
     setBellOpen(false);
     clearNotifications().catch(() => {});

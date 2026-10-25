@@ -1,6 +1,6 @@
 [package]
 name = "employee-attendance-system"
-version = "0.3.0"
+version = "0.3.1"
 description = "نظام إدارة الحضور والانصراف والرواتب"
 authors = ["you"]
 edition = "2021"

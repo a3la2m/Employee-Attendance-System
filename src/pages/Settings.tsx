@@ -22,6 +22,7 @@ import {
   clearDemoData,
 } from "../lib/api";
 import Modal from "../components/Modal";
+import { useConfirm } from "../components/Confirm";
 import type { Employee, Holiday, Settings, Shift, StorageInfo } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
@@ -80,6 +81,8 @@ const tzOptions = (v: string): [string, string][] =>
   TZ_ZONES.some(([id]) => id === v) ? TZ_ZONES : [[v, v], ...TZ_ZONES];
 
 export default function SettingsPage({ toast }: { toast: Toast }) {
+  // تأكيد «نعم/لا» داخلي — لا يستجيب للنقرة العابرة كـ window.confirm
+  const confirm = useConfirm();
   const [cfg, setCfg] = useState<Settings>({});
   const [autostart, setAutostart] = useState(false);
   const [autostartBusy, setAutostartBusy] = useState(false);
@@ -159,7 +162,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   };
 
   const removeShift = async (id: number) => {
-    if (!confirm("حذف هذه الوردية؟ الموظفون المسنَدون إليها سيعودون للوردية الرئيسية."))
+    if (!(await confirm("حذف هذه الوردية؟ الموظفون المسنَدون إليها سيعودون للوردية الرئيسية.", { title: "حذف الوردية", yes: "نعم، احذف" })))
       return;
     setShiftBusy(true);
     try {
@@ -301,7 +304,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
           return;
         }
         const msg = `تم نقل ${files.length} ملف إلى:\n${dir}\n\nيُفضل إعادة تشغيل التطبيق للتأكد من عمله بعد النقل. هل تريد إعادة التشغيل الآن؟`;
-        if (confirm(msg)) {
+        if (await confirm(msg, { title: "إعادة التشغيل", yes: "نعم، أعد التشغيل" })) {
           try {
           const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
           await getCurrentWebviewWindow().close();
@@ -326,12 +329,11 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
 
   /** حذف الموظفين التجريبيين (9001..9005) وبصماتهم — يُنشأ تلقائياً لأول تشغيل. */
   const doClearDemo = async () => {
-    if (
-      !confirm(
-        "حذف البيانات التجريبية (5 موظفين وبصماتهم)؟\nلا يُمسّ أي موظف حقيقي.",
-      )
-    )
-      return;
+    const ok = await confirm(
+      "حذف البيانات التجريبية (5 موظفين وبصماتهم)؟\nلا يُمسّ أي موظف حقيقي.",
+      { title: "حذف البيانات التجريبية", yes: "نعم، احذفها" },
+    );
+    if (!ok) return;
     setBusyStorage(true);
     try {
       const r = await clearDemoData();
@@ -348,8 +350,11 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   };
 
   const doRestore = async () => {
-    if (!confirm("استعادة الإعدادات من attendance-settings.json فوق الإعدادات الحالية؟"))
-      return;
+    const ok = await confirm(
+      "استعادة الإعدادات من attendance-settings.json فوق الإعدادات الحالية؟",
+      { title: "استعادة الإعدادات", yes: "نعم، استعد" },
+    );
+    if (!ok) return;
     setBusyStorage(true);
     try {
       const n = await restoreSettings();
@@ -380,14 +385,13 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   };
 
   const removeHoliday = async (h: Holiday) => {
-    if (
-      !window.confirm(
-        `حذف الإجازة الرسمية ${h.date}${h.name ? " — " + h.name : ""}؟${
-          " يُعاد احتساب اليوم لكل الموظفين."
-        }`,
-      )
-    )
-      return;
+    // تأكيد داخلي: لا حذف إلا بعد ضغط «نعم» فعلياً (window.confirm كان قد
+    // يستقبل نقرة ثانية عابرة فيُنفَّذ الحذف قبل قراءة السؤال)
+    const ok = await confirm(
+      `حذف الإجازة الرسمية ${h.date}${h.name ? " — " + h.name : ""}؟\nيُعاد احتساب اليوم لكل الموظفين.`,
+      { title: "حذف إجازة رسمية", yes: "نعم، احذف" },
+    );
+    if (!ok) return;
     try {
       await holidayDelete(h.id);
       toast("حُذفت الإجازة الرسمية وأُعيد احتساب اليوم");

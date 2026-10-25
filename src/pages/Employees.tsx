@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Modal from "../components/Modal";
+import { useConfirm } from "../components/Confirm";
 import { PrintHeader, PrintFooter } from "../components/PrintChrome";
 import {
   listEmployees,
@@ -78,6 +79,8 @@ const curMonth = (): [string, string] => {
 };
 
 export default function Employees({ toast }: { toast: Toast }) {
+  // تأكيد «نعم/لا» داخلي — لا يستجيب للنقرة العابرة كـ window.confirm
+  const confirm = useConfirm();
   const [rows, setRows] = useState<Employee[]>([]);
   const [form, setForm] = useState<Employee | null>(null);
   const [q, setQ] = useState("");
@@ -110,7 +113,8 @@ export default function Employees({ toast }: { toast: Toast }) {
     lastAutoEn.current = "";
     enTouched.current = false;
     if (emp) {
-      enTouched.current = true;
+      // لا نضع علامة «لمس يدوي»: الخروج من حقل الاسم العربي يعيد التوليد دائماً
+      // (ما لم يعدّل المستخدم الحقل الإنجليزي بنفسه).
       setForm({ ...emp, name_en: emp.name_en ?? "" });
       lastAutoEn.current = translitArabic(emp.name);
     } else {
@@ -133,25 +137,16 @@ export default function Employees({ toast }: { toast: Toast }) {
     lastAutoEn.current = auto;
   };
 
-  // توليد تلقائي عند الخروج من حقل الاسم العربي (مع تأخير خفيف لضمان تحديث القيمة)
+  // توليد فوري لحظة الخروج من حقل الاسم العربي — يعاد كتابة الاسم الإنجليزي
+  // من آخر قيمة عربية، إلا إذا عدّل المستخدم الحقل الإنجليزي بنفسه (enTouched).
   const autoGenEnOnBlur = () => {
     setForm((f) => {
       if (!f || enTouched.current) return f;
       const auto = translitArabic(f.name);
       if (!auto.trim()) return f;
-      if (f.name_en && f.name_en !== lastAutoEn.current) return f;
       lastAutoEn.current = auto;
       return { ...f, name_en: auto };
     });
-  };
-
-  // توليد يدوي صريح من زر 🔄 (يعمل للإضافة والتعديل معاً)
-  const genEn = () => {
-    if (!form) return;
-    enTouched.current = false;
-    const auto = translitArabic(form.name);
-    lastAutoEn.current = auto;
-    setForm({ ...form, name_en: auto });
   };
 
   /** تعبئة رقم البصمة لموظف جديد تلقائياً: أعلى رقم على الجهاز أو في البرنامج
@@ -178,11 +173,12 @@ export default function Employees({ toast }: { toast: Toast }) {
     const reactivated = form.id > 0 && !prevActive && form.active;
     // إيقاف موظف نشط: تأكيد «نعم/لا» قبل أي حفظ — يشرح أثره على جهاز البصمة
     if (form.id > 0 && prevActive && !form.active) {
-      const ok = window.confirm(
+      const ok = await confirm(
         `إيقاف الموظف «${form.name}» سيحذف بصمه من جهاز البصمة فلا يعود يُبصم.\n` +
           `سجل حضوره السابق يبقى كاملاً في البرنامج.\n` +
           `وعند إعادة تفعيله لاحقاً يجب إعادة تعريفه على الجهاز وتسجيل بصماته من جديد.\n\n` +
           `هل تريد المتابعة؟`,
+        { title: "إيقاف موظف", yes: "نعم، أوقفه" },
       );
       if (!ok) return; // إلغاء: لا حفظ محلي ولا أي تعديل على الجهاز
     }
@@ -277,7 +273,11 @@ export default function Employees({ toast }: { toast: Toast }) {
   };
 
   const remove = async (emp: Employee) => {
-    if (!confirm(`حذف الموظف «${emp.name}» مع سجلاته؟`)) return;
+    const ok = await confirm(`حذف الموظف «${emp.name}» مع سجلاته؟`, {
+      title: "حذف موظف",
+      yes: "نعم، احذف",
+    });
+    if (!ok) return;
     try {
       await deleteEmployee(emp.id);
       toast("تم الحذف");
@@ -364,31 +364,21 @@ export default function Employees({ toast }: { toast: Toast }) {
                 />
               </div>
               <div>
-                <label className="label flex items-center justify-between">
-                  <span>الاسم بالإنجليزية (على الجهاز) 🔤</span>
-                  <button
-                    type="button"
-                    className="text-xs font-bold text-indigo-600 hover:underline"
-                    onClick={genEn}
-                    title="توليد الاسم الإنجليزي من الاسم العربي"
-                  >
-                    🔄 توليد من الاسم العربي
-                  </button>
-                </label>
+                <label className="label">الاسم بالإنجليزية (على الجهاز) 🔤</label>
                 <input
                   className="input text-left"
                   dir="ltr"
-                  placeholder="يُولَّد تلقائياً عند الإضافة — أو اضغط 🔄"
+                  placeholder="يُولَّد تلقائياً عند الخروج من الاسم العربي"
                   value={form.name_en}
                   onChange={(e) => {
-                    enTouched.current = true; // لا يتوقف التوليد التلقائي بعد هذا اللمس
+                    enTouched.current = true; // تعديل يدوي: يتوقف التوليد التلقائي
                     setForm({ ...form, name_en: e.target.value });
                   }}
                 />
                 <div className="text-[11px] text-slate-500 mt-1 leading-relaxed">
                   شاشة البصمة لا تدعم العربية — يُرسل هذا الاسم إلى الجهاز عند
-                  الحفظ. التوليد التلقائي يجري عند إضافة موظف جديد فقط ولا يتغيّر
-                  بتعديل الاسم العربي لموظف موجود — استخدم زر 🔄 متى شئت.
+                  الحفظ. يُولَّد تلقائياً من الاسم العربي فور الخروج من حقله؛
+                  عدّله يدوياً متى شئت وسيتوقف التوليد التلقائي بعده.
                 </div>
               </div>
               <div>
@@ -824,6 +814,8 @@ function PunchesModal({
   /** يُستدعى بعد تغيير الإجازات لتحديث قائمة الموظفين (الرصيد في الجدول). */
   onChanged?: () => void;
 }) {
+  // تأكيد «نعم/لا» داخلي (حذف الإجازات) — لا يستجيب للنقرة العابرة
+  const confirm = useConfirm();
   // نطاق تلقائي: من أول الشهر الحالي إلى آخره (قابل للتغيير يدوياً)
   const [from, setFrom] = useState(() => curMonth()[0]);
   const [to, setTo] = useState(() => curMonth()[1]);
@@ -944,14 +936,13 @@ function PunchesModal({
   const removeLeave = async (l: Leave) => {
     const label = LEAVE_LABELS[l.leave_type] ?? l.leave_type;
     const restore = l.leave_type === "annual";
-    if (
-      !window.confirm(
-        `حذف ${label} (${l.from_date} ← ${l.to_date})؟${
-          restore ? " تُستعاد أيامها إلى الرصيد." : ""
-        }`,
-      )
-    )
-      return;
+    const ok = await confirm(
+      `حذف ${label} (${l.from_date} ← ${l.to_date})؟${
+        restore ? " تُستعاد أيامها إلى الرصيد." : ""
+      }`,
+      { title: "حذف إجازة", yes: "نعم، احذف" },
+    );
+    if (!ok) return;
     try {
       await deleteLeave(l.id);
       if (restore) setBalance((b) => b + dayCount(l.from_date, l.to_date));
