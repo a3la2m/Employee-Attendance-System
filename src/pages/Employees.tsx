@@ -65,6 +65,22 @@ const PUNCH_LABELS: Record<number, string> = {
   5: "إضافي (خروج)",
 };
 
+/** عدد صفوف الصفحة الواحدة (A4) في ورقة طباعة الحركات. */
+const ROWS_PER_PAGE = 27;
+
+/** تقسيم مصفوفة إلى صفحات بحجم ثابت (لطباعة A4 بعدة صفحات). */
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/** تحويل قيمة إلى خلية CSV مع تهريب الفواصل والاقتباسات. */
+const csvCell = (v: string | number) => {
+  const s = String(v ?? "");
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
 /** لصق صلاحية الجهاز بالعربية (تُعرض في رسائل الحفظ وشاشات العرض). */
 const privLabel = (p: number) =>
   p === 14 ? "سوبر أدمن (أدمن كامل)" : p === 6 ? "مدير" : "مستخدم عادي";
@@ -802,7 +818,7 @@ const dayCount = (a: string, b: string): number => {
 };
 
 /** نافذة عرض كل حركات موظف (دخول/خروج/استراحة/إضافي) + إجازاته، مع بحث. */
-function PunchesModal({
+export function PunchesModal({
   emp,
   onClose,
   toast,
@@ -998,6 +1014,53 @@ function PunchesModal({
     }
   };
 
+  /** استخراج الحركات المعروضة إلى ملف Excel (CSV بترميز UTF-8 يفتح مباشرة). */
+  const exportExcel = () => {
+    if (shown.length === 0) {
+      toast("لا حركات ضمن الترشيح الحالي — عدّل الفترة أو امسح الترشيح", "err");
+      return;
+    }
+    const rows: string[][] = grouped
+      ? [
+          ["#", "التاريخ", "الدخول", "الخروج", "المدة", "ملاحظة"],
+          ...pairs.map((r, i) => [
+            String(i + 1),
+            r.date,
+            r.inTime ?? "",
+            r.outTime ?? "",
+            fmtDur(r.minutes),
+            pairNote(r),
+          ]),
+          ["", "الإجمالي", "", "", fmtDur(totalMin), ""],
+        ]
+      : [
+          ["#", "التاريخ", "الوقت", "النوع", "رمز الجهاز"],
+          ...shown.map((p, i) => {
+            const [d, t] = p.device_time.split("T");
+            return [
+              String(i + 1),
+              d,
+              (t ?? "").slice(0, 8),
+              PUNCH_LABELS[p.punch_type] ?? `نوع ${p.punch_type}`,
+              `${p.raw_status}/${p.work_code}`,
+            ];
+          }),
+        ];
+    const csv =
+      "\uFEFF" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+    const url = URL.createObjectURL(
+      new Blob([csv], { type: "text/csv;charset=utf-8;" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `حركات_${emp.name}_${emp.pin || emp.id}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast("جُهّز ملف Excel — يُفتح مباشرة في Excel ✅");
+  };
+
   return (
     <>
     <style>{printCss}</style>
@@ -1061,6 +1124,13 @@ function PunchesModal({
           </button>
           <button className="btn-ghost" onClick={printPunches}>
             🖨️ طباعة الحركات
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={exportExcel}
+            title="تنزيل الحركات المعروضة (ضمن الترشيح) كملف يفتح مباشرة في Excel"
+          >
+            ⬇️ استخراج Excel
           </button>
           <button
             className={`btn-ghost ${
@@ -1382,7 +1452,11 @@ function PunchesModal({
     {/* ===== ورقة طباعة الحركات (تُطبع بزر «طباعة الحركات» — مخفية على الشاشة) ===== */}
     {createPortal(
       <div className="punches-sheet report-sheet p-8">
-        <PrintHeader
+        {(
+          grouped ? chunk(pairs, ROWS_PER_PAGE) : chunk(shown, ROWS_PER_PAGE)
+        ).map((rows, pi, pages) => (
+          <div className="print-page" key={pi}>
+            <PrintHeader
           cfg={cfg}
           logo={logo}
           title={`حركات موظف — ${emp.name}`}
@@ -1399,6 +1473,9 @@ function PunchesModal({
                       totalMin,
                     )}`
                   : `عدد الحركات: ${shown.length}`}
+                {pages.length > 1
+                  ? ` · صفحة ${pi + 1} من ${pages.length}`
+                  : ""}
               </div>
               <div className="text-slate-500 text-xs">
                 تاريخ الطباعة: {todayISO()}
@@ -1429,29 +1506,22 @@ function PunchesModal({
           </thead>
           <tbody>
             {grouped
-              ? pairs.map((r, i) => (
+              ? (rows as PunchPairRow[]).map((r, i) => (
                   <tr key={i}>
-                    <td>{i + 1}</td>
+                    <td>{pi * ROWS_PER_PAGE + i + 1}</td>
                     <td className="font-mono">{r.date}</td>
                     <td className="font-mono">{r.inTime ?? "—"}</td>
                     <td className="font-mono">{r.outTime ?? "—"}</td>
                     <td className="font-bold">{fmtDur(r.minutes)}</td>
-                    <td
-                      className={
-                        r.inTime && r.outTime
-                          ? "text-xs text-slate-500"
-                          : "text-xs font-bold text-amber-700"
-                      }
-                    >
-                      {pairNote(r)}
-                    </td>
+                    {/* الملاحظة تُطبع فارغة ليُملأ يدوياً على الورق */}
+                    <td className="text-xs"></td>
                   </tr>
                 ))
-              : shown.map((p, i) => {
+              : (rows as PunchRow[]).map((p, i) => {
                   const [d, t] = p.device_time.split("T");
                   return (
                     <tr key={i}>
-                      <td>{i + 1}</td>
+                      <td>{pi * ROWS_PER_PAGE + i + 1}</td>
                       <td className="font-mono">{d}</td>
                       <td className="font-mono">{(t ?? "").slice(0, 8)}</td>
                       <td>
@@ -1465,17 +1535,21 @@ function PunchesModal({
                 })}
           </tbody>
         </table>
-        <div className="grid grid-cols-2 gap-8 mt-10 text-sm text-center">
-          <div>
-            <div className="h-12 border-b border-dotted border-slate-400" />
-            <div className="mt-1 font-bold">توقيع الموظف</div>
+        {pi === pages.length - 1 && (
+          <div className="grid grid-cols-2 gap-8 mt-10 text-sm text-center">
+            <div>
+              <div className="h-12 border-b border-dotted border-slate-400" />
+              <div className="mt-1 font-bold">توقيع الموظف</div>
+            </div>
+            <div>
+              <div className="h-12 border-b border-dotted border-slate-400" />
+              <div className="mt-1 font-bold">مسؤول الرواتب</div>
+            </div>
           </div>
-          <div>
-            <div className="h-12 border-b border-dotted border-slate-400" />
-            <div className="mt-1 font-bold">مسؤول الرواتب</div>
-          </div>
-        </div>
+        )}
         <PrintFooter cfg={cfg} />
+          </div>
+        ))}
       </div>,
       document.body,
     )}

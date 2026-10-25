@@ -51,6 +51,12 @@ export const printCss = `
 .slip-overlay .pay-slip { display: block; }
 /* ورقة طباعة حركات موظف (تُطبع من نافذة الحركات بزر «طباعة الحركات») */
 .punches-sheet { display: none; }
+/* تقسيم الحركات إلى صفحات A4 بـ 27 صفاً: كل صفحة تكسر قبل التالية */
+.print-page { break-after: page; page-break-after: always; }
+.print-page:last-child { break-after: auto; page-break-after: auto; }
+/* صفوف مضغوطة (≈7مم) حتى تتسع 27 بالصفحة مع الترويسة والتذييل */
+.punches-sheet .report-table th { padding: 5px 6px; font-size: 11.5px; }
+.punches-sheet .report-table td { padding: 4px 6px; font-size: 12.5px; }
 /* ورقة قسيمة دفعة مجمّدة — تُطبع وحدها بزر «طباعة كما كانت وقت الدفع» */
 .frozen-sheet { display: none; }
 
