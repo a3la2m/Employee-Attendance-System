@@ -6,12 +6,14 @@ import {
   checkTimeSync,
   clockNote,
   presentNow,
+  absenceNotesList,
 } from "../lib/api";
 import type {
   Dashboard as Dash,
   DashboardCharts,
   PresentNowItem,
   TimeCheck,
+  AbsenceNote,
 } from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
@@ -24,9 +26,13 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
   const [busy, setBusy] = useState(false);
   // الموظفون الموجودون حالياً: سجّلوا دخولاً ولم يسجّلوا خروجاً بعد
   const [present, setPresent] = useState<PresentNowItem[]>([]);
+  // أسباب الغياب المرسلة من البوت
+  const [absenceNotes, setAbsenceNotes] = useState<AbsenceNote[]>([]);
 
-  const loadPresent = () =>
+  const loadPresent = () => {
     presentNow().then(setPresent).catch(() => {});
+    absenceNotesList(100).then(setAbsenceNotes).catch(() => {});
+  };
 
   const load = async () => {
     // تحميل متوازٍ: البطاقات والرسوم تظهران بأسرع ما يمكن بدل التتابع
@@ -70,6 +76,18 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
       setBusy(false);
     }
   };
+
+  // تصفية أسباب الغياب المرسلة من البوت في آخر 5 أيام (اليوم + 4 أيام سابقة)
+  const refDate = d?.date || new Date().toISOString().slice(0, 10);
+  const cutoffDate = (() => {
+    const dt = new Date(refDate + "T00:00:00Z");
+    if (isNaN(dt.getTime())) return "";
+    dt.setUTCDate(dt.getUTCDate() - 4);
+    return dt.toISOString().slice(0, 10);
+  })();
+  const recentAbsenceNotes = absenceNotes.filter(
+    (n) => (!cutoffDate || n.date >= cutoffDate) && n.date <= refDate,
+  );
 
   const cards = [
     { label: "الموظفون النشطون", value: d?.employees ?? "—", icon: "👥", tone: "bg-indigo-50 text-indigo-600" },
@@ -142,6 +160,40 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
               </span>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* أسباب الغياب المرسلة من البوت في آخر 5 أيام */}
+      <div className="card">
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <h2 className="font-bold">
+            📝 أسباب الغياب المرسلة من البوت
+            <span className="text-sm font-normal text-slate-500 mr-2">
+              (آخر 5 أيام)
+            </span>
+          </h2>
+          {recentAbsenceNotes.length > 0 && (
+            <span className="badge bg-amber-100 text-amber-700">
+              {recentAbsenceNotes.length}
+            </span>
+          )}
+        </div>
+        {recentAbsenceNotes.length === 0 ? (
+          <p className="text-sm text-slate-400">
+            لا توجد أسباب غياب مرسلة من البوت خلال آخر 5 أيام.
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-100 text-sm">
+            {recentAbsenceNotes.map((n) => (
+              <li key={n.id} className="py-2 flex items-start gap-3">
+                <span className="text-slate-400 text-xs w-24 shrink-0 font-mono" dir="ltr">
+                  {n.date}
+                </span>
+                <span className="font-bold shrink-0">{n.employee_name}</span>
+                <span className="flex-1 text-slate-600">{n.reason}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 

@@ -21,13 +21,24 @@ import {
   assignCompOff,
   listShifts,
   reassignShiftRecompute,
+  listEmployeeAdvances,
+  addEmployeeAdvance,
+  toggleAdvanceInstallment,
+  deleteEmployeeAdvance,
 } from "../lib/api";
 import type { PunchRow } from "../lib/api";
 import { translitArabic } from "../lib/translit";
 import { printCss, todayISO } from "../lib/print";
 import { pairPunches, fmtDur } from "../lib/punchPairs";
 import type { PunchPairRow } from "../lib/punchPairs";
-import type { Employee, Leave, Holiday, Shift, Settings } from "../lib/types";
+import type {
+  Employee,
+  EmployeeAdvance,
+  Leave,
+  Holiday,
+  Shift,
+  Settings,
+} from "../lib/types";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
 
@@ -53,6 +64,7 @@ const EMPTY: Employee = {
   leave_accrual_month: null,
   shift_id: null,
   device_privilege: 0,
+  bot_allowed: true,
 };
 
 // نوع الحركة كما يسجلها الجهاز (0=دخول 1=خروج …)
@@ -103,6 +115,7 @@ export default function Employees({ toast }: { toast: Toast }) {
   const [status, setStatus] = useState<"all" | "active" | "inactive">("all");
   const [cur, setCur] = useState("ILS");
   const [viewEmp, setViewEmp] = useState<Employee | null>(null);
+  const [advEmp, setAdvEmp] = useState<Employee | null>(null);
   const [shifts, setShifts] = useState<Shift[]>([]);
   // آخر قيمة لاتينية ولّدها التطبيق من الاسم العربي (لتعرف إن عدّلها المستخدم)
   const lastAutoEn = useRef("");
@@ -631,6 +644,35 @@ export default function Employees({ toast }: { toast: Toast }) {
               </div>
             </div>
 
+            {/* السماح باستخدام بوت تلجرام — نفس القيمة في جدول الموظفين المرتبطين */}
+            <div className="mt-3 p-3 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-3">
+              <div>
+                <div className="font-bold text-sm">بوت تلجرام</div>
+                <div className="text-xs text-slate-500">
+                  المنع يوقف استخدام الأزرار والأوامر فقط، ولا يؤثر على الحضور
+                  أو الراتب.
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm shrink-0">
+                <input
+                  type="checkbox"
+                  checked={form.bot_allowed}
+                  onChange={(e) =>
+                    setForm({ ...form, bot_allowed: e.target.checked })
+                  }
+                />
+                <span
+                  className={
+                    form.bot_allowed
+                      ? "text-emerald-700 font-bold"
+                      : "text-rose-700 font-bold"
+                  }
+                >
+                  {form.bot_allowed ? "مسموح" : "ممنوع"}
+                </span>
+              </label>
+            </div>
+
             {/* حالة الموظف: تنشيط/إلغاء تنشيط واضحة */}
             <div className="mt-4 p-3 rounded-lg border border-slate-200 flex items-center justify-between">
               <div>
@@ -753,6 +795,14 @@ export default function Employees({ toast }: { toast: Toast }) {
                   >
                     {r.active ? "نشط" : "موقوف"}
                   </span>
+                  {!r.bot_allowed && (
+                    <span
+                      className="badge bg-rose-100 text-rose-700 mr-1"
+                      title="ممنوع من استخدام بوت تلجرام"
+                    >
+                      🚫 البوت
+                    </span>
+                  )}
                 </td>
                 <td className="td">
                   <div className="flex gap-2">
@@ -762,6 +812,16 @@ export default function Employees({ toast }: { toast: Toast }) {
                       title="عرض كل الحركات والإجازات"
                     >
                       👁 عرض
+                    </button>
+                    <button
+                      className="text-amber-700 hover:underline text-xs font-bold"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAdvEmp(r);
+                      }}
+                      title="إدارة وعرض سلف الموظف وأقساطها"
+                    >
+                      💵 سلف
                     </button>
                     <button
                       className="text-indigo-600 hover:underline text-xs"
@@ -798,7 +858,423 @@ export default function Employees({ toast }: { toast: Toast }) {
           onChanged={load}
         />
       )}
+
+      {/* نافذة عرض وإدارة سلف الموظف */}
+      {advEmp && (
+        <AdvancesModal
+          emp={advEmp}
+          curSym={curSym}
+          onClose={() => setAdvEmp(null)}
+          toast={toast}
+        />
+      )}
     </div>
+  );
+}
+
+/** الشهر الحالي بصيغة YYYY-MM (الافتراضي لبداية خصم السلفة). */
+const curPeriod = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const fmtMoney = (v: number) =>
+  v.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+/** نافذة إدارة سلف الموظف: عرض السلف الفعالة التي لم تخصم بعد، والسلف السابقة،
+ *  مع إمكانية تعليم أي سلفة/قسط أنها خُصمت، وإنشاء سلفة جديدة (دفعة واحدة على الراتب القادم أو تقسيط على الرواتب القادمة). */
+export function AdvancesModal({
+  emp,
+  curSym,
+  onClose,
+  toast,
+}: {
+  emp: Employee;
+  curSym: string;
+  onClose: () => void;
+  toast: Toast;
+}) {
+  const confirm = useConfirm();
+  const [advances, setAdvances] = useState<EmployeeAdvance[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  // حقول إنشاء سلفة جديدة
+  const [amount, setAmount] = useState("");
+  const [mode, setMode] = useState<"single" | "installments">("single");
+  const [instCount, setInstCount] = useState(2);
+  const [startPeriod, setStartPeriod] = useState(() => curPeriod());
+  const [note, setNote] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+
+  const load = async () => {
+    setBusy(true);
+    try {
+      setAdvances(await listEmployeeAdvances(emp.id));
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [emp.id]);
+
+  const createAdvance = async () => {
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      toast("أدخل مبلغ سلفة صحيح أكبر من صفر", "err");
+      return;
+    }
+    if (!startPeriod) {
+      toast("حدد شهر بداية الخصم", "err");
+      return;
+    }
+    const cnt = mode === "single" ? 1 : Math.max(2, Math.floor(instCount));
+    setAddBusy(true);
+    try {
+      await addEmployeeAdvance(emp.id, amt, mode, cnt, startPeriod, note);
+      toast(
+        mode === "single"
+          ? `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} تُخصم على راتب ${startPeriod} ✅`
+          : `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} مقسّطة على ${cnt} رواتب ابتداءً من ${startPeriod} ✅`,
+      );
+      setAmount("");
+      setNote("");
+      await load();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const toggleInst = async (instId: number, currentDeducted: boolean, period: string) => {
+    try {
+      await toggleAdvanceInstallment(instId, !currentDeducted);
+      toast(
+        !currentDeducted
+          ? `تم تعليم سلفة/قسط شهر ${period} أنه خُصم ✓`
+          : `أُعيدت سلفة/قسط شهر ${period} إلى فعّالة (لم تُخصم بعد)`,
+      );
+      await load();
+    } catch (e) {
+      toast(String(e), "err");
+    }
+  };
+
+  const removeAdvance = async (adv: EmployeeAdvance) => {
+    const ok = await confirm(
+      `حذف السلفة البالغة ${fmtMoney(adv.amount)} ${curSym} وجميع أقساطها نهائياً؟`,
+      { title: "حذف سلفة", yes: "نعم، احذف" },
+    );
+    if (!ok) return;
+    try {
+      await deleteEmployeeAdvance(adv.id);
+      toast("تم حذف السلفة");
+      await load();
+    } catch (e) {
+      toast(String(e), "err");
+    }
+  };
+
+  const activeAdvances = advances.filter((a) => a.active);
+  const totalRemaining = advances.reduce((s, a) => s + a.remaining_amount, 0);
+  const totalDeducted = advances.reduce((s, a) => s + a.deducted_amount, 0);
+
+  const previewPerMonth =
+    mode === "installments" && Number(amount) > 0 && instCount >= 2
+      ? fmtMoney(Number(amount) / instCount)
+      : null;
+
+  return (
+    <Modal
+      onClose={onClose}
+      title={
+        <span>
+          💵 سلف الموظف: {emp.name}
+          <span className="text-sm text-slate-500 font-normal">
+            {" "}
+            (رقم {emp.pin || "—"})
+          </span>
+        </span>
+      }
+      panelClass="max-w-3xl"
+    >
+      {/* ملخص السلف */}
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <div className="text-xs text-amber-700 font-bold">
+            السلف الفعالة (المتبقي غير المخصوم)
+          </div>
+          <div className="text-xl font-extrabold text-amber-800 mt-0.5">
+            {fmtMoney(totalRemaining)} {curSym}
+          </div>
+          <div className="text-[11px] text-amber-600">
+            {activeAdvances.length} سلفة فعالة لم تُخصم بالكامل
+          </div>
+        </div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+          <div className="text-xs text-emerald-700 font-bold">
+            إجمالي ما تم خصمه
+          </div>
+          <div className="text-xl font-extrabold text-emerald-800 mt-0.5">
+            {fmtMoney(totalDeducted)} {curSym}
+          </div>
+        </div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs text-slate-500 font-bold">
+            إجمالي السلف المسجلة
+          </div>
+          <div className="text-xl font-extrabold text-slate-800 mt-0.5">
+            {advances.length} سلفة
+          </div>
+        </div>
+      </div>
+
+      {/* نموذج إنشاء سلفة جديدة */}
+      <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 mb-5">
+        <div className="font-extrabold text-sm text-slate-800">
+          ➕ إنشاء سلفة جديدة
+        </div>
+        <div className="grid sm:grid-cols-3 gap-3">
+          <div>
+            <label className="label">مبلغ السلفة ({curSym}) *</label>
+            <input
+              type="number"
+              min={0}
+              step="10"
+              className="input text-left"
+              dir="ltr"
+              placeholder="مثال: 500"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label">طريقة خصم السلفة *</label>
+            <select
+              className="input"
+              value={mode}
+              onChange={(e) =>
+                setMode(e.target.value as "single" | "installments")
+              }
+            >
+              <option value="single">خصم كامل على الراتب القادم</option>
+              <option value="installments">تقسيط على الرواتب القادمة</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">
+              {mode === "single" ? "شهر الخصم (الراتب)" : "أول شهر يبدأ فيه الخصم"}
+            </label>
+            <input
+              type="month"
+              className="input"
+              value={startPeriod}
+              onChange={(e) => setStartPeriod(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {mode === "installments" && (
+          <div className="grid sm:grid-cols-2 gap-3 items-end pt-1">
+            <div>
+              <label className="label">عدد الأقساط (الأشهر) *</label>
+              <input
+                type="number"
+                min={2}
+                max={60}
+                className="input text-left"
+                dir="ltr"
+                value={instCount}
+                onChange={(e) =>
+                  setInstCount(Math.max(2, Number(e.target.value) || 2))
+                }
+              />
+            </div>
+            <div className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg p-2.5">
+              {previewPerMonth ? (
+                <>
+                  قيمة القسط الشهري:{" "}
+                  <b>
+                    {previewPerMonth} {curSym}
+                  </b>{" "}
+                  لمدة <b>{instCount}</b> أشهر ابتداءً من <b>{startPeriod}</b>
+                </>
+              ) : (
+                "أدخل مبلغ السلفة لمعاينة قيمة القسط الشهري"
+              )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <label className="label">ملاحظة (اختياري)</label>
+            <input
+              className="input"
+              placeholder="مثال: سلفة نقدية طارئة…"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          <button
+            className="btn-primary"
+            onClick={createAdvance}
+            disabled={addBusy}
+          >
+            {addBusy ? "جارٍ الحفظ…" : "💾 إضافة السلفة"}
+          </button>
+        </div>
+      </div>
+
+      {/* السلف المسجلة (الفعالة والسابقة) */}
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="font-extrabold text-sm">
+          📋 السلف المسجلة للموظف ({advances.length})
+        </h3>
+        {busy && <span className="text-xs text-slate-400">جارٍ التحميل…</span>}
+      </div>
+
+      {advances.length === 0 ? (
+        <div className="p-6 text-center text-sm text-slate-400 border border-dashed border-slate-200 rounded-lg">
+          لا توجد سلف مسجلة لهذا الموظف بعد.
+        </div>
+      ) : (
+        <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+          {advances.map((adv) => (
+            <div
+              key={adv.id}
+              className={`rounded-xl border p-3.5 space-y-2.5 ${
+                adv.active
+                  ? "border-amber-300 bg-amber-50/40"
+                  : "border-slate-200 bg-white"
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`badge font-bold ${
+                      adv.active
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-emerald-100 text-emerald-700"
+                    }`}
+                  >
+                    {adv.active ? "⏳ سلفة فعالة (لم تُخصم بالكامل)" : "✓ مخصومة بالكامل"}
+                  </span>
+                  <span className="font-extrabold text-base">
+                    {fmtMoney(adv.amount)} {curSym}
+                  </span>
+                  <span className="badge bg-slate-100 text-slate-700">
+                    {adv.mode === "installments"
+                      ? `تقسيط (${adv.installments_count} دفعات)`
+                      : "دفعة واحدة على الراتب القادم"}
+                  </span>
+                  <span className="text-xs text-slate-500 font-mono">
+                    تاريخ الإنشاء: {adv.created_at.slice(0, 10)}
+                  </span>
+                </div>
+                <button
+                  className="text-xs text-rose-600 hover:underline font-bold"
+                  onClick={() => removeAdvance(adv)}
+                  title="حذف السلفة"
+                >
+                  🗑 حذف
+                </button>
+              </div>
+
+              {adv.note && (
+                <div className="text-xs text-slate-600">
+                  📝 ملاحظة: {adv.note}
+                </div>
+              )}
+
+              <div className="text-xs text-slate-600 flex gap-4">
+                <span>
+                  المخصوم:{" "}
+                  <b className="text-emerald-700">
+                    {fmtMoney(adv.deducted_amount)} {curSym}
+                  </b>
+                </span>
+                <span>
+                  المتبقي:{" "}
+                  <b className="text-rose-600">
+                    {fmtMoney(adv.remaining_amount)} {curSym}
+                  </b>
+                </span>
+              </div>
+
+              {/* جدول أقساط السلفة */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-slate-100">
+                      <th className="py-1.5 px-2 text-right">#</th>
+                      <th className="py-1.5 px-2 text-right">شهر الراتب</th>
+                      <th className="py-1.5 px-2 text-right">المبلغ ({curSym})</th>
+                      <th className="py-1.5 px-2 text-right">الحالة</th>
+                      <th className="py-1.5 px-2 text-center">إجراء</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {adv.installments.map((inst, idx) => (
+                      <tr
+                        key={inst.id}
+                        className="border-t border-slate-100 hover:bg-slate-50"
+                      >
+                        <td className="py-1.5 px-2 text-slate-400">{idx + 1}</td>
+                        <td className="py-1.5 px-2 font-mono font-bold">
+                          {inst.period}
+                        </td>
+                        <td className="py-1.5 px-2 font-bold">
+                          {fmtMoney(inst.amount)} {curSym}
+                        </td>
+                        <td className="py-1.5 px-2">
+                          {inst.deducted ? (
+                            <span className="badge bg-emerald-100 text-emerald-700">
+                              ✓ تم الخصم
+                              {inst.deducted_at
+                                ? ` (${inst.deducted_at.slice(0, 10)})`
+                                : ""}
+                            </span>
+                          ) : (
+                            <span className="badge bg-amber-100 text-amber-800">
+                              فعالة — لم تُخصم بعد
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5 px-2 text-center">
+                          <button
+                            className={`px-2.5 py-1 rounded text-xs font-bold border transition ${
+                              inst.deducted
+                                ? "bg-white text-slate-600 border-slate-300 hover:bg-slate-100"
+                                : "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
+                            }`}
+                            onClick={() =>
+                              toggleInst(inst.id, inst.deducted, inst.period)
+                            }
+                          >
+                            {inst.deducted
+                              ? "↩ إلغاء الخصم"
+                              : "✓ تعليم أنها خُصمت"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }
 

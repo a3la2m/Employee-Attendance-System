@@ -166,6 +166,58 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             sheet       TEXT,                          -- نسخة JSON مجمّدة من القسيمة وقتها
             UNIQUE(employee_id, period)
         );
+
+        -- سلف الموظفين: تُحفظ السلفة الأصلية ونوع خصمها (دفعة واحدة على راتب قادم أو تقسيط على عدة رواتب).
+        CREATE TABLE IF NOT EXISTS employee_advances (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id  INTEGER NOT NULL,
+            amount       REAL NOT NULL,                -- إجمالي مبلغ السلفة
+            mode         TEXT NOT NULL DEFAULT 'single', -- 'single' | 'installments'
+            installments INTEGER NOT NULL DEFAULT 1,   -- عدد الأقساط
+            start_period TEXT NOT NULL,                -- YYYY-MM أول شهر يبدأ فيه الخصم
+            note         TEXT NOT NULL DEFAULT '',
+            created_at   TEXT NOT NULL
+        );
+
+        -- أقساط السلف لكل شهر: كل قسط يرتبط بشهر راتب معيّن (period) ويمكن تعليمه كمخصوم يدوياً أو مع دفع الراتب.
+        CREATE TABLE IF NOT EXISTS advance_installments (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            advance_id  INTEGER NOT NULL,
+            employee_id INTEGER NOT NULL,
+            period      TEXT NOT NULL,                 -- YYYY-MM
+            amount      REAL NOT NULL,
+            deducted    INTEGER NOT NULL DEFAULT 0,    -- 1 = تم الخصم، 0 = لم تخصم بعد (فعالة)
+            deducted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_adv_inst_emp_period ON advance_installments(employee_id, period);
+        CREATE INDEX IF NOT EXISTS idx_adv_inst_adv ON advance_installments(advance_id);
+
+        -- بوت تلجرام: مشرفو الشركة الذين يستقبلون تنبيهات الموظفين (بعد ربط
+        -- محادثتهم بمشاركة رقم الهاتف). chat_id يبقى NULL حتى يتم الربط.
+        CREATE TABLE IF NOT EXISTS telegram_supervisors (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            phone       TEXT NOT NULL,
+            chat_id     TEXT,
+            linked_at   TEXT,
+            active      INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_sup_chat
+            ON telegram_supervisors(chat_id) WHERE chat_id IS NOT NULL;
+
+        -- أسباب الغياب التي يرسلها الموظف عبر البوت (سبب واحد لكل يوم).
+        CREATE TABLE IF NOT EXISTS absence_notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            date        TEXT NOT NULL,
+            reason      TEXT NOT NULL,
+            source      TEXT NOT NULL DEFAULT 'telegram',
+            created_at  TEXT NOT NULL,
+            UNIQUE(employee_id, date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_absence_date ON absence_notes(date);
+
         "#,
     )?;
 
@@ -209,6 +261,18 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     // (أيام الجدول والبنود والإعدادات) لإعادة إنتاج الطباعة حرفياً لاحقاً
     migrate_column(conn, "payslip_snapshots", "enabled", "INTEGER NOT NULL DEFAULT 1")?;
     migrate_column(conn, "payslip_snapshots", "sheet", "TEXT")?;
+    migrate_column(conn, "payslip_snapshots", "advance_deduction", "REAL NOT NULL DEFAULT 0")?;
+    migrate_column(conn, "payroll_runs", "advance_deduction", "REAL NOT NULL DEFAULT 0")?;
+    // هل يُسمح للموظف باستخدام بوت تلجرام؟ (1 افتراضياً — يُمنع يدوياً)
+    migrate_column(conn, "employees", "bot_allowed", "INTEGER NOT NULL DEFAULT 1")?;
+    // ربط الموظف ببوت تلجرام (يُملأ عندما يشارك رقم هاتفه مع البوت)
+    migrate_column(conn, "employees", "telegram_chat_id", "TEXT")?;
+    migrate_column(conn, "employees", "telegram_linked_at", "TEXT")?;
+    // محادثة واحدة لكل موظف (NULL متعدد مسموح)
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_emp_tg_chat
+         ON employees(telegram_chat_id) WHERE telegram_chat_id IS NOT NULL;",
+    )?;
     Ok(())
 }
 

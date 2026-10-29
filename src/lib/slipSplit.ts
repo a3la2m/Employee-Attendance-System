@@ -138,14 +138,17 @@ export function splitSlip(
     0,
     sel.total_worked_hours - sel.overtime_hours - holidayHoursOf(days),
   );
-  // بقية الأسطر المعروضة كما هي — تُطرح من الصافي قبل تقسيم الباقي
+  // بقية الأسطر المعروضة كما هي — تُطرح من الإجمالي قبل تقسيم الباقي
+  // ملاحظة: الصافي المستحق = الإجمالي − خصم السلفة (إن وُجد)، لذا فإن الإجمالي قبل خصم السلفة = net_pay + advance_deduction
+  const advDed = r2(sel.advance_deduction ?? 0);
+  const grossNet = r2(sel.net_pay + advDed);
   const others = r2(
     sel.allowances +
       sel.weekend_pay +
       (sel.holiday_work_pay ?? 0) +
       (sel.comp_off_pay ?? 0),
   );
-  const avail = r2(Math.max(0, sel.net_pay - others));
+  const avail = r2(Math.max(0, grossNet - others));
 
   // الإضافي أولاً (حقوق مستحقة بالساعات)، ثم الأساسي بحد أقصى ما يتبقّى
   const ot = r2(

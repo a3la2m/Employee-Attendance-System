@@ -166,6 +166,7 @@ pub fn compute_payroll(
         comp_off_pay,
         late_deduction,
         absence_deduction,
+        advance_deduction: 0.0,
         net_pay,
     }
 }

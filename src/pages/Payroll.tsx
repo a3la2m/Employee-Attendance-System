@@ -2,8 +2,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   getPayroll,
-  archivePayroll,
-  payrollMonths,
   employeePayrollHistory,
   recomputeDays,
   getSettings,
@@ -19,7 +17,6 @@ import {
 } from "../lib/api";
 import type {
   EmployeePayrollRun,
-  PayrollMonth,
   PayrollResult,
   AttendanceDay,
   Employee,
@@ -91,8 +88,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
   const [selId, setSelId] = useState<number | "">("");
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [slipOpen, setSlipOpen] = useState(false);
-  // الأشهر المؤرشفة + سجل رواتب موظف بعينه
-  const [months, setMonths] = useState<PayrollMonth[]>([]);
+  // سجل رواتب موظف بعينه (يُحفظ تلقائياً عند تعليم الراتب مدفوعاً)
   const [histOpen, setHistOpen] = useState(false);
   const [hist, setHist] = useState<EmployeePayrollRun[]>([]);
   const [histName, setHistName] = useState("");
@@ -128,8 +124,6 @@ export default function Payroll({ toast }: { toast: Toast }) {
 
   const cur = cfg.currency || "ILS";
   const curSym = cur === "USD" ? "$" : cur === "JOD" ? "د.أ" : "₪";
-  const isArchived = months.some((m) => m.period === period);
-
   // عند تبدّل الشهر (التطبيق مفتوح ليلاً): رحّل الفترة المعروضة تلقائياً من
   // الشهر المنصرم إلى الشهر الجديد — بلا حاجة لإعادة التشغيل.
   useEffect(() => {
@@ -138,9 +132,6 @@ export default function Payroll({ toast }: { toast: Toast }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rolledFrom, month]);
-
-  const loadMonths = () =>
-    payrollMonths().then(setMonths).catch(() => {});
 
   // تنقّل بين الأشهر (لا تتجاوز الشهر الحالي)
   const shiftMonth = (delta: number) => {
@@ -151,7 +142,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
     setPeriod(p);
   };
 
-  // فتح سجل رواتب موظف في كل الأشهر المؤرشفة
+  // فتح سجل رواتب موظف في الأشهر السابقة
   const openHist = async (empId: number) => {
     const emp = emps.find((e) => e.id === empId);
     const inRows = rows.find((r) => r.employee_id === empId);
@@ -178,7 +169,6 @@ export default function Payroll({ toast }: { toast: Toast }) {
 
   useEffect(() => {
     load();
-    loadMonths();
     getSettings()
       .then((s) => {
         setCfg(s);
@@ -220,19 +210,6 @@ export default function Payroll({ toast }: { toast: Toast }) {
         setDays(all.filter((d) => d.employee_id === selId));
       }
       toast("تم تحديث الرواتب من سجلات الحضور");
-    } catch (e) {
-      toast(String(e), "err");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const archive = async () => {
-    setBusy(true);
-    try {
-      const c = await archivePayroll(period);
-      toast(`أُرشف راتب ${c} موظف لشهر ${period}`);
-      loadMonths(); // يظهر الشهر فوراً في قائمة الأشهر المؤرشفة
     } catch (e) {
       toast(String(e), "err");
     } finally {
@@ -398,6 +375,14 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   </tr>
                 </>
               )}
+              {(frozenRec.snap.advance_deduction ?? 0) > 0 && (
+                <tr className="border-b border-slate-200 text-rose-600">
+                  <td className="py-1">خصم سلفة</td>
+                  <td className="py-1 text-left font-bold">
+                    − {n(frozenRec.snap.advance_deduction ?? 0)}
+                  </td>
+                </tr>
+              )}
               <tr className="font-extrabold border-t-2 border-slate-300">
                 <td className="pt-2">الصافي</td>
                 <td className="pt-2 text-left">
@@ -553,6 +538,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
       share_work: s?.shareWork ?? 0,
       share_risk: s?.shareRisk ?? 0,
       share_bonus: s?.shareBonus ?? 0,
+      advance_deduction: r.advance_deduction ?? 0,
       net: r.net_pay,
       enabled: s !== null,
       sheet: JSON.stringify(sheet),
@@ -609,15 +595,16 @@ export default function Payroll({ toast }: { toast: Toast }) {
       }
     }
     if (slip) document.body.classList.add("print-slip");
+    else document.body.classList.add("print-sheet");
     try {
       window.print();
     } finally {
-      document.body.classList.remove("print-slip");
+      document.body.classList.remove("print-slip", "print-sheet");
     }
 
-    // بعد الطباعة مباشرة: نافذة نعم/لا داخل التطبيق — هل يُعلَّم الشهر كمدفوع؟
+    // بعد طباعة القسيمة مباشرة: نافذة نعم/لا داخل التطبيق — هل يُعلَّم الشهر كمدفوع؟
     // (لا تسأل إن كان مُعلَّماً كمدفوع مسبقاً — والتعليم يتم حصراً بضغط «نعم»)
-    if (sel && !paidOf(sel.employee_id)) {
+    if (slip && sel && !paidOf(sel.employee_id)) {
       const target = sel;
       setAsk({
         title: "💵 تعليم الشهر كمدفوع؟",
@@ -799,31 +786,9 @@ export default function Payroll({ toast }: { toast: Toast }) {
               📅 هذا الشهر
             </button>
           )}
-          {/* الأشهر المؤرشفة — اضغط للانتقال إليها */}
-          <select
-            className="input !w-60"
-            value={isArchived ? period : ""}
-            onChange={(e) => e.target.value && setPeriod(e.target.value)}
-            title="الأشهر المؤرشفة — اختر واحداً لعرضه"
-          >
-            <option value="">🗃️ الأشهر المؤرشفة ({months.length})</option>
-            {months.map((m) => (
-              <option key={m.period} value={m.period}>
-                {pLabel(m.period)} — {m.employees} موظف · {n(m.net_total)}{" "}
-                {curSym}
-              </option>
-            ))}
-          </select>
-          {isArchived && (
-            <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full">
-              ✅ مؤرشف
-            </span>
-          )}
+          {/* الأشهر السابقة تُفتح بالتنقّل ‹ أو حقل الشهر — دون قائمة أرشيف ظاهرة */}
           <button className="btn-ghost" onClick={recalc} disabled={busy}>
             🔄 تحديث
-          </button>
-          <button className="btn-ghost" onClick={archive} disabled={busy}>
-            🗃️ أرشفة
           </button>
           <button
             className="btn-ghost"
@@ -881,18 +846,9 @@ export default function Payroll({ toast }: { toast: Toast }) {
         </select>
         {selId !== "" && (
           <button
-            className="btn-primary"
-            onClick={() => setSlipOpen(true)}
-            title="عرض قسيمة الراتب على الشاشة قبل الطباعة"
-          >
-            👁️ عرض قسيمة الراتب
-          </button>
-        )}
-        {selId !== "" && (
-          <button
             className="btn-ghost"
             onClick={() => openHist(selId)}
-            title="سجل رواتب هذا الموظف في كل الأشهر المؤرشفة"
+            title="سجل رواتب هذا الموظف في الأشهر السابقة"
           >
             📜 سجل الشهور
           </button>
@@ -911,12 +867,12 @@ export default function Payroll({ toast }: { toast: Toast }) {
         <button
           className="btn-primary"
           onClick={() => {
-            if (selId === "") return toast("اختر موظفاً أولاً لطباعة قسيمته", "err");
-            printSheet(true);
+            if (selId === "") return toast("اختر موظفاً أولاً لعرض قسيمته", "err");
+            setSlipOpen(true);
           }}
-          title="طباعة قسيمة الراتب للموظف المحدّد برأس المؤسسة وشعارها"
+          title="عرض قسيمة الراتب وطباعتها للموظف المحدّد"
         >
-          📄 طباعة قسيمة الراتب
+          👁️ عرض القسيمة
         </button>
         {selId !== "" && (
           <button className="btn-ghost" onClick={() => setSelId("")}>
@@ -1163,6 +1119,15 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   sel.weekend_pay ? n(sel.weekend_pay) : "—",
                   "text-violet-600",
                 ],
+                ...(sel.advance_deduction && sel.advance_deduction > 0
+                  ? [
+                      [
+                        "خصم السلفة",
+                        `- ${n(sel.advance_deduction)}`,
+                        "text-rose-600",
+                      ],
+                    ]
+                  : []),
               ].map(([label, val, cls]) => (
                 <div key={label} className="rounded-lg border border-slate-200 p-3">
                   <div className="text-[11px] text-slate-500">{label}</div>
@@ -1281,6 +1246,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
               <th className="th">الأساسي ({curSym})</th>
               <th className="th">البدلات ({curSym})</th>
               <th className="th">بدل العطلة ({curSym})</th>
+              <th className="th">خصم السلفة ({curSym})</th>
               <th className="th">الصافي ({curSym})</th>
               <th className="th">الحالة</th>
             </tr>
@@ -1288,7 +1254,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
           <tbody>
             {viewRows.length === 0 && (
               <tr>
-                <td className="td text-center text-slate-400 py-8" colSpan={9}>
+                <td className="td text-center text-slate-400 py-8" colSpan={10}>
                   {selId !== ""
                     ? "لا راتب محسوب لهذا الموظف في هذه الفترة."
                     : "لا بيانات رواتب — اضغط «تحديث» بعد سحب الحضور."}
@@ -1313,7 +1279,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                     <button
                       className="text-xs text-slate-400 hover:text-indigo-600 mr-1"
                       onClick={() => openHist(r.employee_id)}
-                      title="سجل رواتب هذا الموظف في كل الأشهر المؤرشفة"
+                      title="سجل رواتب هذا الموظف في الأشهر السابقة"
                     >
                       📜
                     </button>
@@ -1326,6 +1292,11 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   <td className="td text-violet-600">
                     {r.weekend_days_paid
                       ? `${n(r.weekend_pay)} (${r.weekend_days_paid} يوم عطلة)`
+                      : "—"}
+                  </td>
+                  <td className="td text-rose-600 font-bold">
+                    {r.advance_deduction && r.advance_deduction > 0
+                      ? `− ${n(r.advance_deduction)}`
                       : "—"}
                   </td>
                   <td className="td font-extrabold">{n(r.net_pay)}</td>
@@ -1370,7 +1341,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
             })}
             {viewRows.length > 0 && (
               <tr className="bg-slate-50 font-extrabold">
-                <td className="td" colSpan={7}>
+                <td className="td" colSpan={8}>
                   {selId === "" ? "الإجمالي العام" : "إجمالي الموظف"}
                 </td>
                 <td className="td text-indigo-700">{n(totalNet)}</td>
@@ -1400,7 +1371,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
         الصافي = الأساسي + البدلات + بدل العطلة (لا خصومات إطلاقاً).
       </p>
 
-      {/* ===== سجل رواتب موظف بعينه في الأشهر المؤرشفة ===== */}
+      {/* ===== سجل رواتب موظف بعينه في الأشهر السابقة ===== */}
       {histOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-50 overflow-y-auto p-4 print:hidden"
@@ -1414,7 +1385,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
               <h2 className="font-bold text-lg">
                 📜 سجل الرواتب — {histName}
                 <span className="text-sm font-normal text-slate-500 mr-2">
-                  (الأشهر المؤرشفة — الأحدث أولاً)
+                  (الأحدث أولاً)
                 </span>
               </h2>
               <button
@@ -1428,8 +1399,8 @@ export default function Payroll({ toast }: { toast: Toast }) {
             </div>
             {hist.length === 0 ? (
               <p className="text-sm text-slate-400 py-8 text-center">
-                لا يوجد أرشيف رواتب لهذا الموظف بعد — افتح أي شهر من أعلى
-                الصفحة واضغط «🗃️ أرشفة» ليُحفظ في هذا السجل.
+                لا يوجد سجل رواتب سابق لهذا الموظف بعد — يُحفظ السجل
+                تلقائياً عند تعليم راتبه مدفوعاً.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -1512,7 +1483,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
             className="max-w-5xl mx-auto my-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-white">شهر القسيمة:</span>
                 <input
@@ -1524,7 +1495,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
               </div>
               <div className="flex gap-2">
                 <button className="btn-primary" onClick={() => printSheet(true)}>
-                  🖨️ طباعة
+                  🖨️ طباعة القسيمة
                 </button>
                 <button
                   className="btn-ghost bg-white"
@@ -1536,7 +1507,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
               </div>
             </div>
             <div className="slip-overlay">
-              <div className="report-sheet pay-slip p-8 bg-white shadow-2xl rounded-xl">
+              <div className="report-sheet pay-slip p-5 sm:p-7 bg-white shadow-2xl rounded-xl">
                 <SlipSheet
                   cfg={cfg}
                   logo={logo}
@@ -1774,6 +1745,22 @@ export default function Payroll({ toast }: { toast: Toast }) {
           document.body,
         )}
 
+      {/* ورقة كشف الرواتب للطباعة — وثيقة مستقلة بترويسة وتذييل */}
+      {createPortal(
+        <div className="pay-sheet report-sheet p-8">
+          <PaySheet
+            cfg={cfg}
+            logo={logo}
+            period={period}
+            rows={viewRows}
+            payments={payments}
+            curSym={curSym}
+            employeeLabel={selId === "" ? "" : selName}
+          />
+        </div>,
+        document.body,
+      )}
+
       {/* نافذة تعليم راتب موظف كمدفوع */}
       {payEmp && (
         <PayModal
@@ -1893,7 +1880,7 @@ function PayModal({
         </label>
         <p className="text-xs text-slate-500 leading-relaxed">
           يُحفظ المبلغ وتاريخ الدفع، وتُحفظ معه إعدادات طباعة القسيمة ونسبها
-          السارية وقتها — لا تتأثر الأرشفة ولا الرواتب المحسوبة.
+          السارية وقتها — لا تتأثر الرواتب المحسوبة.
         </p>
         <div className="flex gap-2 justify-end">
           <button className="btn-ghost" onClick={onCancel}>
@@ -1913,7 +1900,7 @@ function PayModal({
 }
 
 /** محتوى قسيمة الراتب — مشترك بين الطباعة والعرض على الشاشة. */
-function SlipSheet({
+export function SlipSheet({
   cfg,
   logo,
   period,
@@ -1944,20 +1931,23 @@ function SlipSheet({
   const basicHours = sel
     ? Math.max(0, sel.total_worked_hours - sel.overtime_hours - holHours)
     : 0;
+  // الاستقطاعات والصافي: الإجمالي قبل خصم السلفة (لعرض «إجمالي الاستحقاقات»)
+  const advDed = sel ? (sel.advance_deduction ?? 0) : 0;
+  const grossNet = sel ? sel.net_pay + advDed : 0;
 
-  // جدول الأيام: يُقسَّم إلى نصفين جنباً إلى جنب إن كان طويلاً (لتناسب صفحة واحدة)
-  const splitDays = slipDays.length > 14;
+  // جدول الأيام: يُقسَّم إلى نصفين جنباً إلى جنب إن كان طويلاً (اختصار الطول)
+  const splitDays = slipDays.length > 10;
   const half = Math.ceil(slipDays.length / 2);
   const dayTable = (list: AttendanceDay[], from: number) => (
     <table className={`report-table${splitDays ? " slip-days" : ""}`}>
       {splitDays && (
         <colgroup>
           <col style={{ width: "7%" }} />
-          <col style={{ width: "33%" }} />
-          <col style={{ width: "15%" }} />
-          <col style={{ width: "15%" }} />
+          <col style={{ width: "23%" }} />
+          <col style={{ width: "14%" }} />
+          <col style={{ width: "14%" }} />
           <col style={{ width: "13%" }} />
-          <col style={{ width: "17%" }} />
+          <col style={{ width: "29%" }} />
         </colgroup>
       )}
       <thead>
@@ -2015,7 +2005,7 @@ function SlipSheet({
             title="قسيمة راتب"
             meta={
               <>
-                <div className="text-slate-600">الفترة: {period}</div>
+                <div className="text-slate-600">الفترة: {pLabel(period)}</div>
                 <div className="text-slate-500 text-xs">
                   تاريخ الطباعة: {todayISO()}
                 </div>
@@ -2023,20 +2013,33 @@ function SlipSheet({
             }
           />
 
-          <div className="grid grid-cols-2 gap-3 text-sm mb-4">
-            <div className="border border-slate-200 rounded p-3">
-              <div className="text-slate-500 text-xs">الموظف</div>
-              <div className="font-extrabold">{selName}</div>
-              <div className="text-slate-600">
-                رقم البصمة: {pin}
-                {selJob ? ` · ${selJob}` : ""}
+          {/* شريط بيانات الموظف مضغوط في صف واحد لاختصار الطول */}
+          <div className="slip-meta grid grid-cols-4 border border-slate-300 rounded-md overflow-hidden text-sm mb-3">
+            <div className="p-2 border-l border-slate-200">
+              <div className="text-[10px] text-slate-500">الموظف</div>
+              <div className="font-extrabold truncate">{selName}</div>
+              <div className="text-[11px] text-slate-500 truncate">
+                {selJob || "—"}
               </div>
             </div>
-            <div className="border border-slate-200 rounded p-3">
-              <div className="text-slate-500 text-xs">الفترة</div>
-              <div className="font-extrabold">{period}</div>
-              <div className="text-slate-600">
-                {sel ? `${sel.days_present} يوم حضور · ${n(sel.total_worked_hours)} ساعة فعلية` : "—"}
+            <div className="p-2 border-l border-slate-200">
+              <div className="text-[10px] text-slate-500">رقم البصمة</div>
+              <div className="font-extrabold font-mono">{pin}</div>
+            </div>
+            <div className="p-2 border-l border-slate-200">
+              <div className="text-[10px] text-slate-500">الفترة</div>
+              <div className="font-extrabold">{pLabel(period)}</div>
+              <div className="text-[11px] text-slate-500 font-mono">{period}</div>
+            </div>
+            <div className="p-2">
+              <div className="text-[10px] text-slate-500">ملخص الحضور</div>
+              <div className="font-bold">
+                {sel
+                  ? `${sel.days_present} يوم · ${n(sel.total_worked_hours)} ساعة`
+                  : "—"}
+              </div>
+              <div className="text-[11px] text-slate-500">
+                تاريخ الطباعة: {todayISO()}
               </div>
             </div>
           </div>
@@ -2053,26 +2056,6 @@ function SlipSheet({
             dayTable(slipDays, 0)
           )}
 
-          {/* ملخص الساعات: الأساسية + الإضافية (×1.5) + إجمالي الفعلي */}
-          {sel && (
-            <div className="flex flex-wrap gap-2 mt-3 text-xs font-bold">
-              <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5">
-                ساعات الدوام الأساسية: {n(basicHours)} ساعة
-              </span>
-              <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-amber-700">
-                ساعات إضافية (×{n(slip.otMult)}): {n(sel.overtime_hours)} ساعة
-              </span>
-              {holHours > 0 && (
-                <span className="rounded-lg border border-fuchsia-200 bg-fuchsia-50 px-3 py-1.5 text-fuchsia-700">
-                  دوام عطلة رسمية (×1.5): {n(holHours)} ساعة
-                </span>
-              )}
-              <span className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-indigo-700">
-                إجمالي الساعات الفعلية: {n(sel.total_worked_hours)} ساعة
-              </span>
-            </div>
-          )}
-
           {sel && (
             <>
               {slip.enabled && !slipSumOk(slip) && (
@@ -2081,167 +2064,242 @@ function SlipSheet({
                   التقسيم غير مطبَّق. عدّلها من «إعدادات الطباعة لقسيمة الراتب».
                 </div>
               )}
-              <table className="report-table mt-4">
-                <tbody>
-                  {split ? (
-                    <>
-                      <tr>
-                        <td
-                          colSpan={2}
-                          className="font-extrabold text-right"
-                          style={{ background: "#f1f5f9" }}
-                        >
-                          الراتب الأساسي
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="text-right w-1/2">
-                          الأساسي (ساعات الدوام × سعر الساعة {n(slip.rate)})
-                        </td>
-                        <td>
-                          {n(split.basic)} {curSym}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td
-                          className="text-right"
-                          style={{ borderTop: "1px dashed #94a3b8" }}
-                        >
-                          بدل العطلة والأيام المدفوعة ({sel.paid_workdays} يوم
-                          دوام)
-                        </td>
-                        <td
-                          className="text-violet-600"
-                          style={{ borderTop: "1px dashed #94a3b8" }}
-                        >
-                          {sel.weekend_pay
-                            ? `+ ${n(sel.weekend_pay)} ${curSym}`
-                            : "—"}
-                        </td>
-                      </tr>
-                      <tr className="subtotal-row">
-                        <td className="text-right">إجمالي الراتب الأساسي</td>
-                        <td>
-                          {n(split.basic + sel.weekend_pay)} {curSym}
-                        </td>
-                      </tr>
-                      <tr>
-                        <td className="font-bold text-right">
-                          العمل الإضافي ({n(sel.overtime_hours)} ساعة ×{" "}
-                          {n(slip.otMult)} × {n(slip.rate)})
-                        </td>
-                        <td className="text-amber-700">
-                          + {n(split.ot)} {curSym}
-                        </td>
-                      </tr>
-                    </>
-                  ) : (
+              {/* الجدول مقسوم إلى قسمين جنباً إلى جنب: الاستحقاقات | الساعات والاستقطاعات */}
+              <div className="grid grid-cols-2 gap-3 items-start mt-3">
+                <table className="report-table slip-sum">
+                  <colgroup>
+                    <col style={{ width: "66%" }} />
+                    <col style={{ width: "34%" }} />
+                  </colgroup>
+                  <thead>
                     <tr>
-                      <td className="font-bold text-right w-1/2">الأساسي</td>
+                      <th colSpan={2} className="text-right">
+                        الاستحقاقات
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {split ? (
+                      <>
+                        <tr className="group-row">
+                          <td colSpan={2} className="text-right">
+                            الراتب الأساسي
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            الأساسي ({n(basicHours)} ساعة × {n(slip.rate)})
+                          </td>
+                          <td>
+                            {n(split.basic)} {curSym}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            بدل العطلة والأيام المدفوعة ({sel.paid_workdays} يوم
+                            دوام)
+                          </td>
+                          <td className="text-violet-600">
+                            {sel.weekend_pay
+                              ? `+ ${n(sel.weekend_pay)} ${curSym}`
+                              : "—"}
+                          </td>
+                        </tr>
+                        <tr className="subtotal-row">
+                          <td className="text-right">إجمالي الراتب الأساسي</td>
+                          <td>
+                            {n(split.basic + sel.weekend_pay)} {curSym}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            العمل الإضافي ({n(sel.overtime_hours)} ساعة ×{" "}
+                            {n(slip.otMult)} × {n(slip.rate)})
+                          </td>
+                          <td className="text-amber-700">
+                            + {n(split.ot)} {curSym}
+                          </td>
+                        </tr>
+                      </>
+                    ) : (
+                      <>
+                        <tr>
+                          <td className="text-right">
+                            الأساسي (يشمل الإضافي)
+                          </td>
+                          <td>
+                            {n(sel.base_pay)} {curSym}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            بدل العطلة والأيام المدفوعة ({sel.paid_workdays} يوم
+                            دوام)
+                          </td>
+                          <td className="text-violet-600">
+                            {sel.weekend_pay
+                              ? `+ ${n(sel.weekend_pay)} ${curSym}`
+                              : "—"}
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                    <tr>
+                      <td className="text-right">
+                        البدلات (فطور + مواصلات)
+                      </td>
                       <td>
-                        {n(sel.base_pay)} {curSym}
+                        {n(sel.allowances)} {curSym}
                       </td>
                     </tr>
-                  )}
-                  <tr>
-                    <td className="font-bold text-right">
-                      البدلات (فطور + مواصلات)
-                    </td>
-                    <td>
-                      {n(sel.allowances)} {curSym}
-                    </td>
-                  </tr>
-                  {!split && (
-                    <tr>
-                      <td className="font-bold text-right">
-                        بدل العطلة والأيام المدفوعة ({sel.paid_workdays} يوم
-                        دوام)
-                      </td>
-                      <td className="text-violet-600">
-                        {sel.weekend_pay
-                          ? `+ ${n(sel.weekend_pay)} ${curSym}`
-                          : "—"}
-                      </td>
-                    </tr>
-                  )}
-                  {(sel.holiday_work_days ?? 0) > 0 && (
-                    <tr>
-                      <td className="font-bold text-right">
-                        دوام في عطلة رسمية ({sel.holiday_work_days} يوم — 62 +
-                        ساعات × 1.5)
-                      </td>
-                      <td className="text-fuchsia-600">
-                        + {n(sel.holiday_work_pay ?? 0)} {curSym}
-                      </td>
-                    </tr>
-                  )}
-                  {(sel.comp_off_days ?? 0) > 0 && (
-                    <tr>
-                      <td className="font-bold text-right">
-                        أيام بدل تعويضية ({sel.comp_off_days} يوم — أجر يوم
-                        العطلة 62)
-                      </td>
-                      <td className="text-fuchsia-600">
-                        + {n(sel.comp_off_pay ?? 0)} {curSym}
-                      </td>
-                    </tr>
-                  )}
-                  {split && (
-                    <>
+                    {split && (
+                      <>
+                        <tr>
+                          <td className="text-right">بدل طبيعة العمل</td>
+                          <td className="text-emerald-700">
+                            + {n(split.shareWork)} {curSym}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            بدل المخاطرة والسلامة المهنية
+                          </td>
+                          <td className="text-emerald-700">
+                            + {n(split.shareRisk)} {curSym}
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right">
+                            مكافأة الإنجاز / الإنتاجية
+                          </td>
+                          <td className="text-emerald-700">
+                            + {n(split.shareBonus)} {curSym}
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                    {(sel.holiday_work_days ?? 0) > 0 && (
                       <tr>
-                        <td className="font-bold text-right">
-                          بدل طبيعة العمل
+                        <td className="text-right">
+                          دوام في عطلة رسمية ({sel.holiday_work_days} يوم — 62 +
+                          ساعات × 1.5)
                         </td>
-                        <td className="text-emerald-700">
-                          + {n(split.shareWork)} {curSym}
+                        <td className="text-fuchsia-600">
+                          + {n(sel.holiday_work_pay ?? 0)} {curSym}
                         </td>
                       </tr>
+                    )}
+                    {(sel.comp_off_days ?? 0) > 0 && (
                       <tr>
-                        <td className="font-bold text-right">
-                          بدل المخاطرة والسلامة المهنية
+                        <td className="text-right">
+                          أيام بدل تعويضية ({sel.comp_off_days} يوم — أجر يوم
+                          العطلة 62)
                         </td>
-                        <td className="text-emerald-700">
-                          + {n(split.shareRisk)} {curSym}
+                        <td className="text-fuchsia-600">
+                          + {n(sel.comp_off_pay ?? 0)} {curSym}
                         </td>
                       </tr>
-                      <tr>
-                        <td className="font-bold text-right">
-                          مكافأة الإنجاز / الإنتاجية
-                        </td>
-                        <td className="text-emerald-700">
-                          + {n(split.shareBonus)} {curSym}
-                        </td>
-                      </tr>
-                    </>
-                  )}
-                  {(sel.paid_leave_days > 0 ||
-                    sel.unpaid_leave_days > 0 ||
-                    sel.holiday_days > 0 ||
-                    (sel.comp_off_days ?? 0) > 0) && (
-                    <tr>
-                      <td className="text-right text-xs text-slate-500">
-                        إجازات: مدفوعة {sel.paid_leave_days} · غير مدفوعة{" "}
-                        {sel.unpaid_leave_days} · رسمية {sel.holiday_days}
-                        {(sel.comp_off_days ?? 0) > 0
-                          ? ` · بدل ${sel.comp_off_days}`
-                          : ""}{" "}
-                        (المدفوعة محسوبة ضمن البدل أعلاه)
-                      </td>
-                      <td className="text-xs text-slate-500">—</td>
+                    )}
+                    <tr className="total-row">
+                      <td className="text-right">إجمالي الاستحقاقات</td>
+                      <td>{n(grossNet)} {curSym}</td>
                     </tr>
-                  )}
-                  <tr className="total-row">
-                    <td className="font-extrabold text-right">الصافي المستحق</td>
-                    <td className="font-extrabold text-base">
-                      {n(sel.net_pay)} {curSym}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+
+                <table className="report-table slip-sum">
+                  <colgroup>
+                    <col style={{ width: "66%" }} />
+                    <col style={{ width: "34%" }} />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th colSpan={2} className="text-right">
+                        الساعات والاستقطاعات
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="text-right">ساعات الدوام الأساسية</td>
+                      <td>{n(basicHours)} ساعة</td>
+                    </tr>
+                    <tr>
+                      <td className="text-right">
+                        ساعات إضافية (×{n(slip.otMult)})
+                      </td>
+                      <td className="text-amber-700">
+                        {n(sel.overtime_hours)} ساعة
+                      </td>
+                    </tr>
+                    {holHours > 0 && (
+                      <tr>
+                        <td className="text-right">
+                          دوام عطلة رسمية (×1.5)
+                        </td>
+                        <td className="text-fuchsia-600">
+                          {n(holHours)} ساعة
+                        </td>
+                      </tr>
+                    )}
+                    <tr className="subtotal-row">
+                      <td className="text-right">إجمالي الساعات الفعلية</td>
+                      <td>{n(sel.total_worked_hours)} ساعة</td>
+                    </tr>
+                    {advDed > 0 && (
+                      <>
+                        <tr className="group-row">
+                          <td colSpan={2} className="text-right">
+                            الاستقطاعات
+                          </td>
+                        </tr>
+                        <tr>
+                          <td className="text-right text-rose-700">
+                            خصم السلفة
+                          </td>
+                          <td className="text-rose-600 font-extrabold">
+                            − {n(advDed)} {curSym}
+                          </td>
+                        </tr>
+                        <tr className="subtotal-row">
+                          <td className="text-right">
+                            إجمالي الاستقطاعات
+                          </td>
+                          <td className="text-rose-600">
+                            − {n(advDed)} {curSym}
+                          </td>
+                        </tr>
+                      </>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* شريط الصافي المستحق بعرض الورقة */}
+              <div className="slip-net">
+                <span>الصافي المستحق</span>
+                <span className="amount">
+                  {n(sel.net_pay)} {curSym}
+                </span>
+              </div>
+
+              {(sel.paid_leave_days > 0 ||
+                sel.unpaid_leave_days > 0 ||
+                sel.holiday_days > 0 ||
+                (sel.comp_off_days ?? 0) > 0) && (
+                <div className="mt-2 text-[11px] text-slate-500 text-right leading-relaxed">
+                  إجازات: مدفوعة {sel.paid_leave_days} · غير مدفوعة{" "}
+                  {sel.unpaid_leave_days} · رسمية {sel.holiday_days}
+                  {(sel.comp_off_days ?? 0) > 0
+                    ? ` · بدل ${sel.comp_off_days}`
+                    : ""}{" "}
+                  (المدفوعة محسوبة ضمن الاستحقاقات)
+                </div>
+              )}
             </>
           )}
 
-          <div className="grid grid-cols-2 gap-8 mt-6 text-sm text-center">
+          <div className="grid grid-cols-2 gap-8 mt-6 text-sm text-center slip-signs">
             <div>
               <div className="h-12 border-b border-dotted border-slate-400" />
               <div className="mt-1 font-bold">توقيع المستلم</div>
@@ -2253,6 +2311,181 @@ function SlipSheet({
           </div>
 
           <PrintFooter cfg={cfg} />
+    </>
+  );
+}
+
+/** ورقة كشف الرواتب للطباعة: رأس المؤسسة + ملخص + جدول كامل + تذييل وتوقيعات. */
+export function PaySheet({
+  cfg,
+  logo,
+  period,
+  rows,
+  payments,
+  curSym,
+  employeeLabel,
+}: {
+  cfg: Settings;
+  logo: string;
+  period: string;
+  rows: PayrollResult[];
+  payments: SalaryPayment[];
+  curSym: string;
+  employeeLabel: string;
+}) {
+  const sum = (f: (r: PayrollResult) => number) =>
+    rows.reduce((a, r) => a + f(r), 0);
+  const totalNet = sum((r) => r.net_pay);
+  const totalBase = sum((r) => r.base_pay);
+  const totalAllow = sum((r) => r.allowances);
+  const totalWeekend = sum((r) => r.weekend_pay);
+  const totalAdvance = sum((r) => r.advance_deduction ?? 0);
+  const paidOf = (id: number) => payments.find((p) => p.employee_id === id);
+  const paidRows = rows.filter((r) => paidOf(r.employee_id));
+  const paidSum = paidRows.reduce((a, r) => a + r.net_pay, 0);
+
+  return (
+    <>
+      <PrintHeader
+        cfg={cfg}
+        logo={logo}
+        title={employeeLabel ? "كشف راتب موظف" : "كشف الرواتب الشهري"}
+        meta={
+          <>
+            <div className="text-slate-700 font-bold">
+              الفترة: {pLabel(period)}
+            </div>
+            {employeeLabel && (
+              <div className="text-slate-600">الموظف: {employeeLabel}</div>
+            )}
+            <div className="text-slate-600">
+              عدد الموظفين: {rows.length} · مدفوع: {paidRows.length}
+            </div>
+            <div className="text-slate-500 text-xs">
+              تاريخ الطباعة: {todayISO()}
+            </div>
+          </>
+        }
+      />
+
+      {/* ملخص علوي مضغوط */}
+      <div className="grid grid-cols-3 gap-2 mb-4 text-center">
+        {[
+          ["عدد الموظفين", String(rows.length), "text-slate-900"],
+          ["إجمالي الأساسي", `${n(totalBase)} ${curSym}`, "text-slate-900"],
+          ["إجمالي البدلات", `${n(totalAllow)} ${curSym}`, "text-emerald-700"],
+          ["بدل العطلة الأسبوعية", `${n(totalWeekend)} ${curSym}`, "text-violet-700"],
+          ["خصم السلف", `${n(totalAdvance)} ${curSym}`, "text-rose-600"],
+          ["إجمالي الصافي", `${n(totalNet)} ${curSym}`, "text-indigo-700"],
+        ].map(([k, v, cls]) => (
+          <div key={k} className="rounded-lg border border-slate-300 p-2">
+            <div className="text-[10px] text-slate-500">{k}</div>
+            <div className={`text-sm font-extrabold ${cls}`}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex justify-between text-xs text-slate-600 mb-1.5">
+        <span>
+          المدفوع: <b className="text-emerald-700">{n(paidSum)} {curSym}</b>
+        </span>
+        <span>
+          غير المدفوع:{" "}
+          <b className="text-rose-600">{n(totalNet - paidSum)} {curSym}</b>
+        </span>
+      </div>
+
+      <table className="w-full report-table pay-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>الموظف</th>
+            <th>البصمة</th>
+            <th>أيام</th>
+            <th>ساعات</th>
+            <th>إضافي</th>
+            <th>الأساسي</th>
+            <th>البدلات</th>
+            <th>بدل العطلة</th>
+            <th>خصم السلفة</th>
+            <th>الصافي</th>
+            <th>الحالة</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={12} className="text-center text-slate-400 py-6">
+                لا بيانات رواتب لهذه الفترة.
+              </td>
+            </tr>
+          )}
+          {rows.map((r, i) => {
+            const p = paidOf(r.employee_id);
+            return (
+              <tr key={r.employee_id}>
+                <td>{i + 1}</td>
+                <td className="font-medium">{r.employee_name}</td>
+                <td className="font-mono">{r.pin || "—"}</td>
+                <td>{r.days_present}</td>
+                <td>{n(r.total_worked_hours)}</td>
+                <td>{n(r.overtime_hours)}</td>
+                <td>{n(r.base_pay)}</td>
+                <td>{n(r.allowances)}</td>
+                <td>{r.weekend_pay ? n(r.weekend_pay) : "—"}</td>
+                <td className="text-rose-600">
+                  {r.advance_deduction ? `− ${n(r.advance_deduction)}` : "—"}
+                </td>
+                <td className="font-extrabold">{n(r.net_pay)}</td>
+                <td className={p ? "text-emerald-700" : "text-rose-600"}>
+                  {p ? "مدفوع ✓" : "غير مدفوع"}
+                </td>
+              </tr>
+            );
+          })}
+          {rows.length > 0 && (
+            <tr className="total-row">
+              <td colSpan={3} className="font-extrabold">
+                الإجمالي العام
+              </td>
+              <td className="font-extrabold">
+                {rows.reduce((a, r) => a + r.days_present, 0)}
+              </td>
+              <td className="font-extrabold">
+                {n(rows.reduce((a, r) => a + r.total_worked_hours, 0))}
+              </td>
+              <td className="font-extrabold">
+                {n(rows.reduce((a, r) => a + r.overtime_hours, 0))}
+              </td>
+              <td className="font-extrabold">{n(totalBase)}</td>
+              <td className="font-extrabold">{n(totalAllow)}</td>
+              <td className="font-extrabold">{n(totalWeekend)}</td>
+              <td className="font-extrabold text-rose-600">
+                {totalAdvance ? `− ${n(totalAdvance)}` : "—"}
+              </td>
+              <td className="font-extrabold text-indigo-700">
+                {n(totalNet)}
+              </td>
+              <td className="font-bold">
+                {paidRows.length}/{rows.length}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+
+      <div className="grid grid-cols-2 gap-10 mt-8 text-sm text-center pay-signs">
+        <div>
+          <div className="h-12 border-b border-dotted border-slate-400" />
+          <div className="mt-1 font-bold">إعداد / مسؤول الرواتب</div>
+        </div>
+        <div>
+          <div className="h-12 border-b border-dotted border-slate-400" />
+          <div className="mt-1 font-bold">اعتماد / المدير</div>
+        </div>
+      </div>
+
+      <PrintFooter cfg={cfg} />
     </>
   );
 }

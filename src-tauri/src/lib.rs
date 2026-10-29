@@ -9,6 +9,7 @@ mod db;
 mod models;
 mod payroll;
 mod storage;
+mod telegram;
 mod zk;
 
 use commands::AppState;
@@ -119,48 +120,19 @@ fn notify_tick(app: &tauri::AppHandle) {
         let now = chrono::Utc::now().with_timezone(&tz).naive_local();
         today = now.format("%Y-%m-%d").to_string();
 
-        // 1) الأحداث الناقصة → تُحفظ دائماً في السجل (بدون تكرار)
-        fresh = commands::detect_missing_events(&conn, &today);
+        let now_min = now.hour() as i64 * 60 + now.minute() as i64;
 
-        // 2) تنبيه التأخير — مرة واحدة كل يوم عند الوقت المحدد، ويُحفظ في السجل
+        // 1) الأحداث الناقصة → تُفحص لكل موظف بعد بداية شفته بـ 15 دقيقة
+        fresh = commands::detect_missing_events_at(&conn, &today, Some(now_min));
+
+        // 2) تنبيه التأخير — لكل موظف حسب شفته (بعد بداية الدوام بـ 15 دقيقة)،
+        //    ويُحفظ في السجل مرة واحدة لكل موظف في اليوم.
         lates = if s
             .get("late_notify_enabled")
             .map(|v| v != "0")
             .unwrap_or(true)
         {
-            let time =
-                normalize_hm(&s.get("late_notify_time").cloned().unwrap_or_else(|| "09:00".into()));
-            let sent = s.get("late_notify_sent").cloned().unwrap_or_default();
-            if sent != today {
-                let now_min = now.hour() as i64 * 60 + now.minute() as i64;
-                let (th, tm) = {
-                    let mut it = time.split(':');
-                    let h: i64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(9);
-                    let m: i64 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-                    (h, m)
-                };
-                if now_min >= th * 60 + tm {
-                    let l = commands::lates_today(&conn, &today);
-                    for (id, name, late, _) in &l {
-                        let body = format!("{name} — تأخير {late} دقيقة عن بداية الدوام ({today})");
-                        commands::insert_notification(
-                            &conn,
-                            "late",
-                            Some(*id),
-                            &format!("تأخير: {name}"),
-                            &body,
-                            &today,
-                        );
-                    }
-                    // نُثبّت الإرسال حتى لا يتكرر خلال اليوم
-                    let _ = crate::db::set_setting(&conn, "late_notify_sent", &today);
-                    l
-                } else {
-                    Vec::new()
-                }
-            } else {
-                Vec::new()
-            }
+            commands::lates_due_today(&conn, &today, now_min)
         } else {
             Vec::new()
         };
@@ -192,6 +164,7 @@ fn notify_tick(app: &tauri::AppHandle) {
             .title("🔔 تنبيهات الحضور")
             .body(&body)
             .show();
+        crate::telegram::notify_supervisors_async(app, "🔔 تنبيهات الحضور", &body);
     }
     if !lates.is_empty() {
         let mut body = String::new();
@@ -213,16 +186,14 @@ fn notify_tick(app: &tauri::AppHandle) {
             .title(format!("⏰ تأخير عن الدوام — {today}"))
             .body(body.trim_end())
             .show();
+        crate::telegram::notify_supervisors_async(
+            app,
+            &format!("⏰ تأخير عن الدوام — {today}"),
+            body.trim_end(),
+        );
     }
 }
 
-/// يطبّع قيمة زمنية إلى HH:MM (للمقارنة والعرض).
-fn normalize_hm(v: &str) -> String {
-    let mut it = v.trim().split(':');
-    let h: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(9);
-    let m: u32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-    format!("{h:02}:{m:02}")
-}
 
 fn sync_once(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
@@ -408,6 +379,7 @@ pub fn run() {
 
             spawn_auto_sync(app.handle().clone());
             spawn_notifications(app.handle().clone());
+            telegram::spawn_bot(app.handle().clone());
             watch_new_windows_users(app.handle().clone());
             Ok(())
         })
@@ -473,6 +445,20 @@ pub fn run() {
             commands::salary_payments,
             commands::save_payslip_snapshot,
             commands::payslip_snapshots,
+            commands::list_employee_advances,
+            commands::add_employee_advance,
+            commands::toggle_advance_installment,
+            commands::delete_employee_advance,
+            telegram::telegram_test,
+            telegram::telegram_supervisors,
+            telegram::telegram_add_supervisor,
+            telegram::telegram_delete_supervisor,
+            telegram::telegram_unlink_supervisor,
+            telegram::telegram_links,
+            telegram::telegram_unlink_employee,
+            telegram::absence_notes_list,
+            telegram::telegram_set_bot_allowed,
+            telegram::telegram_broadcast,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

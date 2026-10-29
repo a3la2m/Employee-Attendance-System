@@ -3,4 +3,13 @@
 # استخدمه مباشرة: ./run-linux.sh
 set -e
 cd "$(dirname "$0")"
-exec ./src-tauri/target/release/employee-attendance-system "$@"
+
+BIN=./src-tauri/target/release/employee-attendance-system
+
+# إذا لم تكن النسخة مبنية بعد، ابنِها بالطريقة الصحيحة (مع custom-protocol)
+if [ ! -x "$BIN" ]; then
+  echo "الملف التنفيذي غير موجود — جاري البناء أول مرة..."
+  exec ./build-linux.sh
+fi
+
+exec "$BIN" "$@"

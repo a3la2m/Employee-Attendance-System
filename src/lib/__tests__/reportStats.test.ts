@@ -29,6 +29,7 @@ const emp = (over: Partial<Employee> = {}): Employee => ({
   leave_accrual_month: null,
   shift_id: null,
   device_privilege: 0,
+  bot_allowed: true,
   ...over,
 });
 

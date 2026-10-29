@@ -38,6 +38,14 @@ pub struct Employee {
     /// 14 = أدمن كامل (سوبر أدمن). تُرسل إلى الجهاز عند الحفظ.
     #[serde(default)]
     pub device_privilege: i64,
+    /// هل يُسمح لهذا الموظف باستخدام بوت تلجرام؟ (الافتراضي نعم)
+    /// يُدار من شاشة الموظفين أو من جدول «الموظفون المرتبطون» في صفحة البوت.
+    #[serde(default = "default_true")]
+    pub bot_allowed: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// وردية دوام: ساعات الدوام الأساسية التي تُحسب عليها أيام الموظف المسنَد إليها.
@@ -166,6 +174,9 @@ pub struct PayrollResult {
     pub comp_off_pay: f64,
     pub late_deduction: f64,
     pub absence_deduction: f64,
+    /// إجمالي خصم السلف لهذا الموظف في هذا الشهر (سواء من قسط واحد أو عدة أقساط مستحقة في الفترة).
+    #[serde(default)]
+    pub advance_deduction: f64,
     pub net_pay: f64,
 }
 
@@ -224,6 +235,9 @@ pub struct PayslipSnapshot {
     pub share_work: f64,
     pub share_risk: f64,
     pub share_bonus: f64,
+    /// خصم السلفة المطبق وقتها
+    #[serde(default)]
+    pub advance_deduction: f64,
     /// الصافي المستحق (لا يتغيّر بالتقسيم — حارس ضد أي خطأ)
     pub net: f64,
     /// هل كان تقسيم الطباعة مفعلاً وقت الحفظ؟ (false = القسيمة طُبعت بنود
@@ -233,3 +247,76 @@ pub struct PayslipSnapshot {
     /// — تُطبع لاحقاً بالضبط كما كانت حتى لو تغيّر الحضور أو الإعدادات بعدها.
     pub sheet: Option<String>,
 }
+
+/// قسط واحد من سلفة موظف مستحق على شهر راتب معيّن.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvanceInstallment {
+    pub id: i64,
+    pub advance_id: i64,
+    pub employee_id: i64,
+    /// YYYY-MM
+    pub period: String,
+    pub amount: f64,
+    /// هل تم خصم هذا القسط؟ (true = خصمت، false = فعالة لم تخصم بعد)
+    pub deducted: bool,
+    pub deducted_at: Option<String>,
+}
+
+/// سلفة موظف مع قائمة أقساطها وملخص المبالغ المخصومة والباقية.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmployeeAdvance {
+    pub id: i64,
+    pub employee_id: i64,
+    pub amount: f64,
+    /// "single" (على الراتب القادم دفعة واحدة) أو "installments" (تقسيط على الرواتب القادمة)
+    pub mode: String,
+    pub installments_count: i64,
+    /// YYYY-MM أول شهر يبدأ فيه الخصم
+    pub start_period: String,
+    pub note: String,
+    pub created_at: String,
+    pub installments: Vec<AdvanceInstallment>,
+    pub deducted_amount: f64,
+    pub remaining_amount: f64,
+    /// هل السلفة فعالة (يوجد على الأقل قسط لم يُخصم بعد)؟
+    pub active: bool,
+}
+
+/// مشرف يستقبل تنبيهات الموظفين عبر تلجرام.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramSupervisor {
+    pub id: i64,
+    pub name: String,
+    pub phone: String,
+    /// معرّف محادثة تلجرام (NULL = لم يشارك رقمه بعد).
+    pub chat_id: Option<String>,
+    pub linked_at: Option<String>,
+    pub active: bool,
+}
+
+/// حالة ربط موظف ببوت تلجرام (لعرضها في شاشة الإعدادات).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramLink {
+    pub employee_id: i64,
+    pub name: String,
+    pub phone: String,
+    pub active: bool,
+    /// هل البوت مسموح لهذا الموظف؟ (0 = ممنوع)
+    pub bot_allowed: bool,
+    pub chat_id: Option<String>,
+    pub linked_at: Option<String>,
+}
+
+/// سبب غياب أرسله الموظف عبر البوت.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AbsenceNote {
+    pub id: i64,
+    pub employee_id: i64,
+    pub employee_name: String,
+    pub date: String,
+    pub reason: String,
+    pub source: String,
+    pub created_at: String,
+}
+
+

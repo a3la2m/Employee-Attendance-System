@@ -32,6 +32,8 @@ export interface Employee {
   shift_id: number | null;
   /** صلاحية الموظف على جهاز البصمة: 0 = عادي، 6 = مدير، 14 = أدمن كامل (سوبر أدمن). */
   device_privilege: number;
+  /** هل يُسمح للموظف باستخدام بوت تلجرام؟ (الافتراضي نعم) */
+  bot_allowed: boolean;
 }
 
 /** وردية دوام: تحدد ساعات العمل ويُسنَد إليها الموظفون. */
@@ -110,6 +112,8 @@ export interface PayrollResult {
   comp_off_pay?: number;
   late_deduction: number;
   absence_deduction: number;
+  /** خصم السلفة (أو قسط السلفة) المستحق لهذا الموظف في هذه الفترة. */
+  advance_deduction?: number;
   net_pay: number;
 }
 
@@ -152,6 +156,8 @@ export interface PayslipSnapshot {
   share_work: number;
   share_risk: number;
   share_bonus: number;
+  /** خصم السلفة المطبق وقتها */
+  advance_deduction?: number;
   /** الصافي المستحق (لا يتغيّر بالتقسيم). */
   net: number;
   /** وقت حفظ اللقطة (ISO — يملؤه الخلفي). */
@@ -161,6 +167,38 @@ export interface PayslipSnapshot {
   /** نسخة JSON كاملة مجمّدة من القسيمة وقتها (الأيام + البنود + الإعدادات)
    * — تُطبع لاحقاً بالضبط كما كانت حتى لو تغيّر الحضور أو الإعدادات بعدها. */
   sheet?: string | null;
+}
+
+/** قسط سلفة مستحق في شهر راتب معيّن. */
+export interface AdvanceInstallment {
+  id: number;
+  advance_id: number;
+  employee_id: number;
+  /** YYYY-MM */
+  period: string;
+  amount: number;
+  /** هل تم خصم القسط؟ (true = خصمت، false = فعالة لم تخصم بعد) */
+  deducted: boolean;
+  deducted_at: string | null;
+}
+
+/** سلفة موظف مع أقساطها وملخص الخصم. */
+export interface EmployeeAdvance {
+  id: number;
+  employee_id: number;
+  amount: number;
+  /** "single" (على الراتب القادم دفعة واحدة) أو "installments" (تقسيط على الرواتب القادمة) */
+  mode: "single" | "installments" | string;
+  installments_count: number;
+  /** YYYY-MM أول شهر يبدأ فيه الخصم */
+  start_period: string;
+  note: string;
+  created_at: string;
+  installments: AdvanceInstallment[];
+  deducted_amount: number;
+  remaining_amount: number;
+  /** هل السلفة فعالة (يوجد قسط واحد على الأقل لم يُخصم بعد)؟ */
+  active: boolean;
 }
 
 export interface DeviceInfo {
@@ -214,6 +252,7 @@ export interface EmployeePayrollRun {
   base_pay: number;
   allowances: number;
   weekend_pay: number;
+  advance_deduction?: number;
   net_pay: number;
   generated_at: string;
 }
@@ -366,3 +405,71 @@ export interface DashboardCharts {
   month: MonthStat;
   top: TopStat[];
 }
+
+// --- تلجرام (البوت) ---
+/** مشرف يستقبل تنبيهات الموظفين عبر تلجرام. */
+export interface TelegramSupervisor {
+  id: number;
+  name: string;
+  phone: string;
+  chat_id: string | null;
+  linked_at: string | null;
+  active: boolean;
+}
+
+/** حالة ربط موظف ببوت تلجرام. */
+export interface TelegramLink {
+  employee_id: number;
+  name: string;
+  phone: string;
+  active: boolean;
+  /** هل البوت مسموح لهذا الموظف؟ (false = ممنوع من الاستخدام) */
+  bot_allowed: boolean;
+  chat_id: string | null;
+  linked_at: string | null;
+}
+
+/** سبب غياب أرسله الموظف عبر البوت. */
+export interface AbsenceNote {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  date: string;
+  reason: string;
+  source: string;
+  created_at: string;
+}
+
+export interface AbsenceNote {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  date: string;
+  reason: string;
+  source: string;
+  created_at: string;
+}
+
+/** رقم مسموح له باستخدام بوت تلجرام. */
+export interface TelegramLink {
+  employee_id: number;
+  name: string;
+  phone: string;
+  active: boolean;
+  /** هل البوت مسموح لهذا الموظف؟ (false = ممنوع من الاستخدام) */
+  bot_allowed: boolean;
+  chat_id: string | null;
+  linked_at: string | null;
+}
+
+/** سبب غياب أرسله الموظف عبر البوت. */
+export interface AbsenceNote {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  date: string;
+  reason: string;
+  source: string;
+  created_at: string;
+}
+

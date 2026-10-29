@@ -993,11 +993,11 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
 
         {/* تنبيه التأخير */}
         <div className="mt-5 pt-4 border-t border-slate-200">
-          <h3 className="font-bold text-sm mb-1">⏰ تنبيه تأخير الموظفين</h3>
+          <h3 className="font-bold text-sm mb-1">⏰ تنبيه تأخير وغياب الموظفين (حسب الشفت)</h3>
           <p className="text-xs text-slate-500 mb-3 leading-relaxed">
-            عند حلول الوقت المحدد يظهر إشعار على سطح المكتب بأسماء المتأخرين عن
-            الدوام ودقائق تأخيرهم — مرة واحدة كل يوم. <b>معلومة فقط:</b> التأخير
-            لا يُخصم من الرواتب ولا يؤثر على القسيمة (العمل قد يكون في أي ساعة).
+            يُرسل التنبيه تلقائياً على سطح المكتب وبوت تلجرام <b>بعد بداية شفت كل موظف بـ 15 دقيقة</b>{" "}
+            — مرة واحدة لكل موظف يومياً. <b>معلومة فقط:</b> التأخير لا يُخصم من
+            الرواتب ولا يؤثر على القسيمة.
           </p>
           <div className="flex flex-wrap items-end gap-4">
             <label className="flex items-center gap-2 text-sm font-medium">
@@ -1009,19 +1009,8 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                 }
                 className="accent-indigo-600 w-4 h-4"
               />
-              تفعيل تنبيه التأخير
+              تفعيل تنبيهات التأخير والدوام (بعد بداية الشفت بـ 15 دقيقة)
             </label>
-            <div>
-              <label className="label">وقت التنبيه</label>
-              <input
-                type="text"
-                placeholder="HH:MM"
-                dir="ltr"
-                className="input w-28"
-                value={cfg.late_notify_time ?? "09:00"}
-                onChange={(e) => set("late_notify_time", e.target.value)}
-              />
-            </div>
           </div>
         </div>
       </div>

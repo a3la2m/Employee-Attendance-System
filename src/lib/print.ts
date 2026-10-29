@@ -46,6 +46,8 @@ export const printCss = `
 .report-table td:nth-child(2) { text-align: right; }
 .report-table .total-row td { background: #eef2ff; border-top: 2px solid #6366f1; }
 .report-table tr { page-break-inside: avoid; }
+/* ورقة كشف الرواتب — تُطبع وحدها بزر «طباعة الكشف» */
+.pay-sheet { display: none; }
 .pay-slip { display: none; }
 /* عرض القسيمة داخل نافذة المعاينة على الشاشة (تبقى مخفية في الطباعة العادية) */
 .slip-overlay .pay-slip { display: block; }
@@ -71,7 +73,36 @@ export const printCss = `
 /* جدول الأيام مقسوماً إلى نصفين جنباً إلى جنب: أعمدة ثابتة وخط أصغر */
 .pay-slip .slip-days { table-layout: fixed; }
 .pay-slip .slip-days th, .pay-slip .slip-days td { padding: 2px 3px; font-size: 10.5px; }
-.pay-slip .slip-days td span { font-size: 10px; }
+.pay-slip .slip-days th { text-align: center; }
+.pay-slip .slip-days th:nth-child(2) { text-align: right; }
+.pay-slip .slip-days td span { font-size: 10px; padding: 0 4px; white-space: nowrap; }
+.pay-slip .slip-days td:nth-child(6) { white-space: nowrap; }
+/* جدولان جانبيان في القسيمة: الاستحقاقات | الساعات والاستقطاعات */
+.pay-slip .slip-sum { table-layout: fixed; page-break-inside: avoid; }
+.pay-slip .slip-sum th { background: #eef2ff; font-size: 11px; font-weight: 800; }
+.pay-slip .slip-sum td { padding: 2.5px 4px; font-size: 10.5px; }
+.pay-slip .slip-sum td:first-child { text-align: right; }
+.pay-slip .slip-sum td:last-child { text-align: center; white-space: nowrap; }
+.pay-slip .slip-sum .group-row td {
+  background: #f1f5f9; font-weight: 800; color: #334155;
+}
+.pay-slip .slip-sum .net-row td {
+  background: #eef2ff; border-top: 2px solid #4f46e5;
+  font-size: 13px; font-weight: 900; color: #3730a3;
+}
+/* شريط الصافي المستحق بعرض الورقة تحت الجدولين */
+.pay-slip .slip-net {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 6px; padding: 5px 12px; border-radius: 6px;
+  background: #eef2ff; border: 1px solid #c7d2fe; border-top: 3px solid #4f46e5;
+  font-size: 13px; font-weight: 900; color: #3730a3;
+}
+.pay-slip .slip-net .amount { font-size: 16px; letter-spacing: 0.3px; }
+/* كشف الرواتب المطبوع: أعمدة مضغوطة لتناسب عرض A4 */
+.pay-sheet .pay-table th { padding: 5px 3px; font-size: 10px; text-align: center; }
+.pay-sheet .pay-table th:nth-child(2) { text-align: right; }
+.pay-sheet .pay-table td { padding: 4px 3px; font-size: 10.5px; }
+.pay-sheet .pay-table .total-row td { font-size: 11px; }
 
 @page { size: A4; margin: 12mm; }
 
@@ -89,6 +120,19 @@ export const printCss = `
   /* وضع طباعة حركات موظف: تُطبع الورقة وحدها */
   body.print-punches main { display: none !important; }
   body.print-punches .punches-sheet { display: block !important; }
+  /* وضع طباعة الكشف: تُطبع ورقة الكشف وحدها (بترويسة وتذييل) */
+  body.print-sheet main { display: none !important; }
+  body.print-sheet .pay-sheet {
+    display: flex !important; flex-direction: column; min-height: 272mm;
+  }
+  body.print-sheet .pay-sheet .pay-signs { margin-top: auto; }
+  body.print-sheet .pay-sheet .print-footer { margin-top: 16px; }
+  /* في القسيمة: التوقيعات والتذييل أسفل الصفحة */
+  body.print-slip main .pay-slip {
+    display: flex !important; flex-direction: column; min-height: 272mm;
+  }
+  body.print-slip main .pay-slip .slip-signs { margin-top: auto; }
+  body.print-slip main .pay-slip .print-footer { margin-top: 12px; }
   /* وضع طباعة قسيمة دفعة مجمّدة: تُطبع الورقة وحدها (كما كانت وقت الدفع) */
   body.print-frozen main { display: none !important; }
   body.print-frozen .frozen-sheet { display: block !important; }

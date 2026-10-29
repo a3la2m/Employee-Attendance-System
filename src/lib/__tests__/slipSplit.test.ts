@@ -215,4 +215,17 @@ describe("splitSlip", () => {
     expect(s.others).toBe(616); // 182 + 310 + 124
     expect(s.pool).toBe(1397.5); // 3841 − 616 − 1190 − 637.5
   });
+  it("خصم السلفة لا ينقص البدلات المقسّمة ويحافظ على الصافي بعد طرح السلفة", () => {
+    const rr = res({
+      advance_deduction: 200,
+      net_pay: 3517, // 3717 − 200
+    });
+    const s = splitSlip(rr, [day()], cfg())!;
+    expect(s.basic).toBe(1190);
+    expect(s.ot).toBe(637.5);
+    expect(s.pool).toBe(1397.5);
+    const totalAfterAdvance =
+      s.basic + s.ot + s.others + s.shareWork + s.shareRisk + s.shareBonus - (rr.advance_deduction ?? 0);
+    expect(r2(totalAfterAdvance)).toBe(r2(rr.net_pay));
+  });
 });

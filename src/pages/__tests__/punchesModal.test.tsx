@@ -64,6 +64,7 @@ const EMP = {
   leave_accrual_month: null,
   shift_id: null,
   device_privilege: 0,
+  bot_allowed: true,
 };
 
 /** عدّ صفحات الطباعة وصفوف كل صفحة بعد انتهاء التحميل. */

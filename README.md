@@ -144,12 +144,13 @@ npm run tauri build      # → .msi و .exe
 ### التشغيل على لينكس (مثل Linux Mint — بدون صلاحيات مدير)
 
 ```bash
-npm run tauri build -- --no-bundle   # يُنتج نسخة إصدار صحيحة (بخاصية custom-protocol)
-./run-linux.sh                       # تشغيل التطبيق مباشرة
+./build-linux.sh   # يبني الواجهة ثم الملف التنفيذي بالطريقة الصحيحة
+./run-linux.sh     # تشغيل التطبيق مباشرة
 ```
 
 > لا تستخدم `cargo build --release` وحده: يبني Tauri بوضع التطوير (devUrl) فتظهر
-> رسالة «تعذّر الاتصال بـ localhost».
+> رسالة «تعذّر الاتصال بـ localhost». استخدم `build-linux.sh` أو أضف
+> `--features custom-protocol`.
 
 ---
 

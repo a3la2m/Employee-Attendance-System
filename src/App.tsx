@@ -7,6 +7,7 @@ import Payroll from "./pages/Payroll";
 import Reports from "./pages/Reports";
 import Device from "./pages/Device";
 import Settings from "./pages/Settings";
+import Telegram from "./pages/Telegram";
 import Toast from "./components/Toast";
 import { useConfirm } from "./components/Confirm";
 import { listen } from "@tauri-apps/api/event";
@@ -24,10 +25,11 @@ type TabKey =
   | "payroll"
   | "reports"
   | "device"
+  | "telegram"
   | "settings";
 
 /** مفاتيح الشاشات المجمّدة مؤقتاً (تظهر في القائمة برمز 🔒 ولا تُفتح). */
-const FROZEN: TabKey[] = ["attendance", "payroll", "reports"];
+const FROZEN: TabKey[] = [];
 
 const NAV: { key: TabKey; label: string; icon: string }[] = [
   { key: "dashboard", label: "لوحة التحكم", icon: "📊" },
@@ -36,6 +38,7 @@ const NAV: { key: TabKey; label: string; icon: string }[] = [
   { key: "payroll", label: "الرواتب", icon: "💰" },
   { key: "reports", label: "تقارير", icon: "📋" },
   { key: "device", label: "جهاز البصمة", icon: "🔐" },
+  { key: "telegram", label: "بوت تلجرام", icon: "🤖" },
   { key: "settings", label: "الإعدادات", icon: "⚙️" },
 ];
 
@@ -46,6 +49,7 @@ const PAGES: Record<TabKey, ComponentType<{ toast: (m: string, t?: "ok" | "err")
   payroll: Payroll,
   reports: Reports,
   device: Device,
+  telegram: Telegram,
   settings: Settings,
 };
 

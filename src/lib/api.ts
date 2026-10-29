@@ -7,6 +7,7 @@ import type {
   DailyRow,
   DeviceInfo,
   Employee,
+  EmployeeAdvance,
   EmployeePayrollRun,
   Holiday,
   Leave,
@@ -23,6 +24,9 @@ import type {
   TimeCheck,
   AttendanceDay,
   ClockCheck,
+  TelegramSupervisor,
+  TelegramLink,
+  AbsenceNote,
 } from "./types";
 
 // --- الإعدادات ---
@@ -190,6 +194,38 @@ export const savePayslipSnapshot = (snap: PayslipSnapshot) =>
 export const payslipSnapshots = (period?: string) =>
   invoke<PayslipSnapshot[]>("payslip_snapshots", { period: period ?? null });
 
+// --- سلف الموظفين ---
+export const listEmployeeAdvances = (employeeId?: number) =>
+  invoke<EmployeeAdvance[]>("list_employee_advances", {
+    employeeId: employeeId ?? null,
+  });
+export const addEmployeeAdvance = (
+  employeeId: number,
+  amount: number,
+  mode: "single" | "installments",
+  installmentsCount: number,
+  startPeriod: string,
+  note: string,
+) =>
+  invoke<EmployeeAdvance>("add_employee_advance", {
+    employeeId,
+    amount,
+    mode,
+    installmentsCount,
+    startPeriod,
+    note,
+  });
+export const toggleAdvanceInstallment = (
+  installmentId: number,
+  deducted: boolean,
+) =>
+  invoke<void>("toggle_advance_installment", {
+    installmentId,
+    deducted,
+  });
+export const deleteEmployeeAdvance = (advanceId: number) =>
+  invoke<void>("delete_employee_advance", { advanceId });
+
 // --- الإجازات ---
 export const addLeave = (
   employeeId: number,
@@ -269,3 +305,23 @@ export const readLogoDataUri = (path: string) =>
   invoke<string>("read_logo_data_uri", { path });
 export const importPunchesCsv = (path: string) =>
   invoke<number>("import_punches_csv", { path });
+
+// --- تلجرام ---
+export const telegramSetBotAllowed = (id: number, allowed: boolean) =>
+  invoke<void>("telegram_set_bot_allowed", { id, allowed });
+export const telegramBroadcast = (text: string, target: string) =>
+  invoke<[number, number]>("telegram_broadcast", { text, target });
+export const telegramTest = () => invoke<string>("telegram_test");
+export const telegramSupervisors = () =>
+  invoke<TelegramSupervisor[]>("telegram_supervisors");
+export const telegramAddSupervisor = (name: string, phone: string) =>
+  invoke<number>("telegram_add_supervisor", { name, phone });
+export const telegramDeleteSupervisor = (id: number) =>
+  invoke<void>("telegram_delete_supervisor", { id });
+export const telegramUnlinkSupervisor = (id: number) =>
+  invoke<void>("telegram_unlink_supervisor", { id });
+export const telegramLinks = () => invoke<TelegramLink[]>("telegram_links");
+export const telegramUnlinkEmployee = (id: number) =>
+  invoke<void>("telegram_unlink_employee", { id });
+export const absenceNotesList = (limit = 50) =>
+  invoke<AbsenceNote[]>("absence_notes_list", { limit });
