@@ -331,18 +331,14 @@ pub fn leave_type_label(ty: &str) -> &'static str {
     }
 }
 
-/// لوحة اختيار نوع الإجازة المطلوبة من البوت.
+/// لوحة اختيار نوع الإجازة المطلوبة من البوت — الأنواع المتاحة:
+/// سنوية / مرضية بمرفق / بدون راتب (الطوارئ وزواج وعزاء تُقدَّم من الإدارة مباشرة).
 fn leave_types_keyboard() -> Value {
     json!({
         "inline_keyboard": [
             [{ "text": "🏖️ إجازة سنوية مدفوعة", "callback_data": "lv:type:annual" }],
             [{ "text": "🏥 إجازة مرضية (مع إرفاق تقرير/صورة)", "callback_data": "lv:type:sick" }],
             [{ "text": "📄 إجازة بدون راتب", "callback_data": "lv:type:unpaid" }],
-            [{ "text": "🚨 إجازة طارئة / ظرف عائلي", "callback_data": "lv:type:emergency" }],
-            [
-                { "text": "💍 إجازة زواج", "callback_data": "lv:type:marriage" },
-                { "text": "🕊️ إجازة عزاء", "callback_data": "lv:type:bereavement" }
-            ],
             [{ "text": "✖️ إلغاء الطلب", "callback_data": "flow:cancel" }]
         ]
     })
@@ -1797,16 +1793,26 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
             // طلبات السلف مُعطّلة من قسم «ما المسموح للموظف؟»
             reply = Some(PERM_DENIED.into());
         } else if let Some(ty) = data.strip_prefix("lv:type:") {
-            set_flow(
-                &conn,
-                &chat,
-                &json!({ "kind": "leave", "leave_type": ty, "step": "duration" }),
-            );
-            reply = Some(format!(
-                "📌 النوع المختار: {}\n\nحدد مدة الإجازة:",
-                leave_type_label(ty)
-            ));
-            keyboard = Some(leave_duration_keyboard(&today, &tomorrow));
+            // الأنواع المتاحة من البوت: سنوية/مرضية/بدون راتب فقط — الطوارئ
+            // وزواج وعزاء تُقدَّم للإدارة مباشرة (يشمل الضغط على أزرار قديمة).
+            if !matches!(ty, "annual" | "sick" | "unpaid") {
+                clear_flow(&conn, &chat);
+                reply = Some(
+                    "ℹ️ هذا النوع غير متاح للطلب عبر البوت.\n\nالأنواع المتاحة: الإجازة السنوية، المرضية، وبدون راتب.\nالأنواع الأخرى (طارئة/زواج/عزاء) تُقدَّم للإدارة مباشرة.".into(),
+                );
+                keyboard = Some(employee_menu(&s, is_sup));
+            } else {
+                set_flow(
+                    &conn,
+                    &chat,
+                    &json!({ "kind": "leave", "leave_type": ty, "step": "duration" }),
+                );
+                reply = Some(format!(
+                    "📌 النوع المختار: {}\n\nحدد مدة الإجازة:",
+                    leave_type_label(ty)
+                ));
+                keyboard = Some(leave_duration_keyboard(&today, &tomorrow));
+            }
         } else if data == "lv:mode:single" {
             if let Some(mut fl) = get_flow(&conn, &chat) {
                 fl["step"] = json!("single_date");
@@ -2604,7 +2610,7 @@ fn employee_help(s: &HashMap<String, String>) -> String {
     }
     out.push_str("/رصيد — رصيد الإجازات السنوية\n");
     if enabled(s, "tg_allow_leave", true) {
-        out.push_str("/اجازة — تقديم طلب إجازة (سنوية / مرضية بمرفق / بدون راتب / طارئة)\n");
+        out.push_str("/اجازة — تقديم طلب إجازة (سنوية / مرضية بمرفق / بدون راتب)\n");
     }
     if enabled(s, "tg_allow_advance", true) {
         out.push_str("/سلفة — تقديم طلب سلفة مالية\n");
@@ -2636,41 +2642,63 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
     if mine.is_empty() {
         return format!("📭 لا توجد أيام حضور مسجّلة لك في {}.", month_label(period));
     }
-    let mut out = format!("📋 كشف دوامك — {}\n", month_label(period));
+    let sep = "━━━━━━━━━━━━━━━━━━";
+    let mut out = format!("📋 كشف دوامك — {}\n{sep}\n", month_label(period));
     let mut present = 0;
-    let mut minutes = 0;
+    let mut worked = 0i64;
+    let mut overtime = 0i64;
+    let mut absent = 0;
     for d in &mine {
         let dd = d.date.get(8..10).unwrap_or("");
         let mm = d.date.get(5..7).unwrap_or("");
         let wd = weekday_ar(&d.date);
         let line = match d.status.as_str() {
-            "weekend" => format!("{dd}/{mm} {wd} — عطلة أسبوعية"),
-            "holiday" => format!("{dd}/{mm} {wd} — عطلة رسمية"),
+            "weekend" => format!("🌴 {dd}/{mm} {wd} — عطلة أسبوعية"),
+            "holiday" => format!("🎉 {dd}/{mm} {wd} — عطلة رسمية"),
             "leave" => format!(
-                "{dd}/{mm} {wd} — إجازة{}",
-                if d.leave_paid == Some(true) { " مدفوعة" } else { "" }
+                "🏖️ {dd}/{mm} {wd} — {}",
+                d.leave_type.as_deref().map(leave_type_label).unwrap_or("إجازة")
             ),
-            "absent" => format!("{dd}/{mm} {wd} — غياب"),
-            _ => {
-                if d.first_in.is_some() {
-                    present += 1;
-                    minutes += d.worked_min;
-                }
-                format!(
-                    "{dd}/{mm} {wd} — {} ← {}  ({} س)",
-                    hhmm(d.first_in.as_ref()),
-                    hhmm(d.last_out.as_ref()),
-                    (d.worked_min as f64 / 60.0)
-                )
+            "absent" => {
+                absent += 1;
+                format!("❌ {dd}/{mm} {wd} — غياب")
             }
+            _ if d.first_in.is_some() => {
+                present += 1;
+                worked += d.worked_min;
+                overtime += d.overtime_min.max(0);
+                if d.last_out.is_some() {
+                    // دخول ← انصراف مع الساعات (رقم واحد بعد الفاصلة) والإضافي إن وجد.
+                    let mut line = format!(
+                        "🟢 {dd}/{mm} {wd} — {} ← {} · {:.1} س",
+                        hhmm(d.first_in.as_ref()),
+                        hhmm(d.last_out.as_ref()),
+                        d.worked_min as f64 / 60.0
+                    );
+                    if d.overtime_min > 0 {
+                        line.push_str(&format!(" (+{:.1} إضافي)", d.overtime_min as f64 / 60.0));
+                    }
+                    line
+                } else {
+                    format!(
+                        "🕓 {dd}/{mm} {wd} — دخول {} بلا انصراف",
+                        hhmm(d.first_in.as_ref())
+                    )
+                }
+            }
+            _ => format!("{dd}/{mm} {wd} — لا تسجيل"),
         };
         out.push_str(&line);
         out.push('\n');
     }
     out.push_str(&format!(
-        "\n📊 الإجمالي: {present} يوم · {:.1} ساعة",
-        minutes as f64 / 60.0
+        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة",
+        worked as f64 / 60.0,
+        overtime as f64 / 60.0
     ));
+    if absent > 0 {
+        out.push_str(&format!("\n❌ أيام الغياب: {absent}"));
+    }
     out
 }
 
