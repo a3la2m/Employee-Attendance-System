@@ -15,8 +15,11 @@ import {
   listNotifications,
   markNotificationsSeen,
   clearNotifications,
+  leaveRequestsList,
+  advanceRequestsList,
 } from "./lib/api";
-import type { Notification } from "./lib/types";
+import type { AdvanceRequest, Notification } from "./lib/types";
+import BotRequestsModal from "./components/BotRequestsModal";
 
 type TabKey =
   | "dashboard"
@@ -70,6 +73,8 @@ const KIND_ICON: Record<string, string> = {
   absent: "📌",
   early_leave: "⏳",
   no_punches: "📅",
+  no_checkout: "🚪",
+  absent_eod: "📌",
 };
 
 export default function App() {
@@ -83,6 +88,11 @@ export default function App() {
   const [bellOpen, setBellOpen] = useState(false);
   const bellRef = useRef<HTMLDivElement>(null);
   const unseen = notifs.filter((n) => !n.seen).length;
+
+  // طلبات الإجازات والسلف الواردة من البوت + عدّاد الطلبات المعلقة
+  const [botReqOpen, setBotReqOpen] = useState(false);
+  const [pendingBotCount, setPendingBotCount] = useState(0);
+  const [advFocus, setAdvFocus] = useState<AdvanceRequest | null>(null);
 
   const toast = (m: string, t: "ok" | "err" = "ok") => setToastMsg({ m, t });
   // تأكيد «نعم/لا» داخلي (بديل window.confirm — لا يستجيب للنقرة العابرة)
@@ -103,12 +113,25 @@ export default function App() {
     setTab("attendance");
   };
 
-  const loadNotifs = () =>
+  const loadBotRequestsCount = () => {
+    Promise.all([leaveRequestsList(), advanceRequestsList()])
+      .then(([lv, adv]) => {
+        const cnt =
+          lv.filter((x) => x.status === "pending").length +
+          adv.filter((x) => x.status === "pending").length;
+        setPendingBotCount(cnt);
+      })
+      .catch(() => {});
+  };
+
+  const loadNotifs = () => {
     listNotifications(200).then(setNotifs).catch(() => {});
+    loadBotRequestsCount();
+  };
 
   useEffect(() => {
     loadNotifs();
-    const iv = setInterval(loadNotifs, 30000); // تحديث العدّاد تلقائياً
+    const iv = setInterval(loadNotifs, 15000); // تحديث العدّاد تلقائياً
     return () => clearInterval(iv);
   }, []);
 
@@ -186,9 +209,20 @@ export default function App() {
       setPending(e.payload.profile);
       toast(`مستخدم ويندوز جديد: ${e.payload.profile} — أدخل بيانات الموظف`, "err");
     });
+    // طلب إجازة أو سلفة جديد من بوت تلجرام
+    const un3 = listen<{ kind?: string }>("bot-request", (e) => {
+      loadBotRequestsCount();
+      toast(
+        e.payload?.kind === "advance"
+          ? "💵 وصل طلب سلفة جديد من البوت — افتح «طلبات الإجازات والسلف» للمراجعة"
+          : "🏖️ وصل طلب إجازة جديد من البوت — افتح «طلبات الإجازات والسلف» للمراجعة",
+        "ok",
+      );
+    });
     return () => {
       un1.then((f) => f());
       un2.then((f) => f());
+      un3.then((f) => f());
     };
   }, []);
 
@@ -206,20 +240,45 @@ export default function App() {
             </div>
             {/* زر الإشعارات: سجل التنبيهات + عدّاد غير المقروء */}
             <button
-              onClick={openBell}
-              title="التنبيهات (كل التنبيهات محفوظة)"
-              aria-label={`التنبيهات${unseen > 0 ? ` — ${unseen} غير مقروء` : ""}`}
-              aria-expanded={bellOpen}
-              className="relative shrink-0 w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 grid place-content-center text-base transition"
-            >
-              🔔
-              {unseen > 0 && (
-                <span className="absolute -top-1 -left-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-extrabold grid place-content-center">
-                  {unseen > 99 ? "99+" : unseen}
-                </span>
-              )}
-            </button>
+                onClick={openBell}
+                title="التنبيهات (كل التنبيهات محفوظة)"
+                aria-label={`التنبيهات${unseen > 0 ? ` — ${unseen} غير مقروء` : ""}`}
+                aria-expanded={bellOpen}
+                className="relative shrink-0 w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 grid place-content-center text-base transition"
+              >
+                🔔
+                {unseen > 0 && (
+                  <span className="absolute -top-1 -left-1 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-extrabold grid place-content-center">
+                    {unseen > 99 ? "99+" : unseen}
+                  </span>
+                )}
+              </button>
           </div>
+
+          {/* زر بارز لطلبات الإجازات والسلف مع العدّاد */}
+          <button
+            type="button"
+            onClick={() => {
+              setBellOpen(false);
+              setBotReqOpen(true);
+            }}
+            className={`mt-3 w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-bold transition ${
+              pendingBotCount > 0
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30"
+                : "bg-slate-800/80 text-slate-300 hover:bg-slate-800"
+            }`}
+          >
+            <span>📥 طلبات الإجازات والسلف</span>
+            <span
+              className={`px-2 py-0.5 rounded-full text-[11px] font-extrabold ${
+                pendingBotCount > 0
+                  ? "bg-amber-400 text-slate-950"
+                  : "bg-slate-700 text-slate-300"
+              }`}
+            >
+              {pendingBotCount}
+            </span>
+          </button>
 
           {/* لوحة التنبيهات المنسدلة */}
           {bellOpen && (
@@ -251,7 +310,9 @@ export default function App() {
                     n.kind === "orphan_out" ||
                     n.kind === "absent" ||
                     n.kind === "early_leave" ||
-                    n.kind === "no_punches";
+                    n.kind === "no_punches" ||
+                    n.kind === "no_checkout" ||
+                    n.kind === "absent_eod";
                   return (
                   <div
                     key={n.id}
@@ -381,10 +442,34 @@ export default function App() {
             focus={attFocus}
             onFocusHandled={() => setAttFocus(null)}
           />
+        ) : tab === "employees" ? (
+          <Employees
+            toast={toast}
+            focusAdvance={advFocus}
+            onAdvanceHandled={() => {
+              setAdvFocus(null);
+              loadBotRequestsCount();
+            }}
+          />
         ) : (
           <Page toast={toast} />
         )}
       </main>
+      {botReqOpen && (
+        <BotRequestsModal
+          onClose={() => {
+            setBotReqOpen(false);
+            loadBotRequestsCount();
+          }}
+          toast={toast}
+          onChanged={loadBotRequestsCount}
+          onOpenEmployeeAdvance={(req) => {
+            setBotReqOpen(false);
+            setAdvFocus(req);
+            setTab("employees");
+          }}
+        />
+      )}
       {toastMsg && (
         <Toast
           message={toastMsg.m}

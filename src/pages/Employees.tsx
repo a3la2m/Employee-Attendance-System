@@ -25,6 +25,8 @@ import {
   addEmployeeAdvance,
   toggleAdvanceInstallment,
   deleteEmployeeAdvance,
+  advanceRequestsList,
+  decideAdvanceRequest,
 } from "../lib/api";
 import type { PunchRow } from "../lib/api";
 import { translitArabic } from "../lib/translit";
@@ -32,6 +34,7 @@ import { printCss, todayISO } from "../lib/print";
 import { pairPunches, fmtDur } from "../lib/punchPairs";
 import type { PunchPairRow } from "../lib/punchPairs";
 import type {
+  AdvanceRequest,
   Employee,
   EmployeeAdvance,
   Leave,
@@ -106,7 +109,15 @@ const curMonth = (): [string, string] => {
   return [`${y}-${m}-01`, `${y}-${m}-${String(last).padStart(2, "0")}`];
 };
 
-export default function Employees({ toast }: { toast: Toast }) {
+export default function Employees({
+  toast,
+  focusAdvance,
+  onAdvanceHandled,
+}: {
+  toast: Toast;
+  focusAdvance?: AdvanceRequest | null;
+  onAdvanceHandled?: () => void;
+}) {
   // تأكيد «نعم/لا» داخلي — لا يستجيب للنقرة العابرة كـ window.confirm
   const confirm = useConfirm();
   const [rows, setRows] = useState<Employee[]>([]);
@@ -116,16 +127,22 @@ export default function Employees({ toast }: { toast: Toast }) {
   const [cur, setCur] = useState("ILS");
   const [viewEmp, setViewEmp] = useState<Employee | null>(null);
   const [advEmp, setAdvEmp] = useState<Employee | null>(null);
+  const [advInitialReq, setAdvInitialReq] = useState<AdvanceRequest | null>(null);
+  const [advReqs, setAdvReqs] = useState<AdvanceRequest[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   // آخر قيمة لاتينية ولّدها التطبيق من الاسم العربي (لتعرف إن عدّلها المستخدم)
   const lastAutoEn = useRef("");
   // هل لمس المستخدم حقل الاسم الإنجليزي يدوياً؟ (يتوقف التوليد التلقائي بعده)
   const enTouched = useRef(false);
 
-  const load = () =>
+  const load = () => {
     listEmployees()
       .then(setRows)
       .catch((e) => toast(String(e), "err"));
+    advanceRequestsList()
+      .then(setAdvReqs)
+      .catch(() => {});
+  };
 
   useEffect(() => {
     load();
@@ -134,6 +151,16 @@ export default function Employees({ toast }: { toast: Toast }) {
       .catch(() => {});
     listShifts().then(setShifts).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!focusAdvance || rows.length === 0) return;
+    const emp = rows.find((r) => r.id === focusAdvance.employee_id);
+    if (emp) {
+      setAdvInitialReq(focusAdvance);
+      setAdvEmp(emp);
+      onAdvanceHandled?.();
+    }
+  }, [focusAdvance, rows, onAdvanceHandled]);
 
   const curSym = cur === "USD" ? "$" : cur === "JOD" ? "د.أ" : "₪";
 
@@ -814,14 +841,25 @@ export default function Employees({ toast }: { toast: Toast }) {
                       👁 عرض
                     </button>
                     <button
-                      className="text-amber-700 hover:underline text-xs font-bold"
+                      className="text-amber-700 hover:underline text-xs font-bold inline-flex items-center gap-1"
                       onClick={(e) => {
                         e.stopPropagation();
+                        const pendingForEmp = advReqs.find(
+                          (a) => a.employee_id === r.id && a.status === "pending",
+                        );
+                        setAdvInitialReq(pendingForEmp ?? null);
                         setAdvEmp(r);
                       }}
                       title="إدارة وعرض سلف الموظف وأقساطها"
                     >
-                      💵 سلف
+                      <span>💵 سلف</span>
+                      {advReqs.some(
+                        (a) => a.employee_id === r.id && a.status === "pending",
+                      ) && (
+                        <span className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-extrabold animate-pulse">
+                          طلب
+                        </span>
+                      )}
                     </button>
                     <button
                       className="text-indigo-600 hover:underline text-xs"
@@ -864,7 +902,16 @@ export default function Employees({ toast }: { toast: Toast }) {
         <AdvancesModal
           emp={advEmp}
           curSym={curSym}
-          onClose={() => setAdvEmp(null)}
+          initialRequest={advInitialReq}
+          pendingRequests={advReqs.filter(
+            (a) => a.employee_id === advEmp.id && a.status === "pending",
+          )}
+          onClose={() => {
+            setAdvEmp(null);
+            setAdvInitialReq(null);
+            load();
+          }}
+          onRequestDecided={load}
           toast={toast}
         />
       )}
@@ -889,25 +936,48 @@ const fmtMoney = (v: number) =>
 export function AdvancesModal({
   emp,
   curSym,
+  initialRequest,
+  pendingRequests = [],
   onClose,
+  onRequestDecided,
   toast,
 }: {
   emp: Employee;
   curSym: string;
+  initialRequest?: AdvanceRequest | null;
+  pendingRequests?: AdvanceRequest[];
   onClose: () => void;
+  onRequestDecided?: () => void;
   toast: Toast;
 }) {
   const confirm = useConfirm();
   const [advances, setAdvances] = useState<EmployeeAdvance[]>([]);
   const [busy, setBusy] = useState(false);
+  const [activeBotReq, setActiveBotReq] = useState<AdvanceRequest | null>(
+    initialRequest ?? pendingRequests[0] ?? null,
+  );
 
-  // حقول إنشاء سلفة جديدة
-  const [amount, setAmount] = useState("");
+  // حقول إنشاء سلفة جديدة (تُعبّأ تلقائياً إن وُجد طلب سلفة من البوت)
+  const [amount, setAmount] = useState(() =>
+    (initialRequest ?? pendingRequests[0])
+      ? String((initialRequest ?? pendingRequests[0])!.amount)
+      : "",
+  );
   const [mode, setMode] = useState<"single" | "installments">("single");
   const [instCount, setInstCount] = useState(2);
   const [startPeriod, setStartPeriod] = useState(() => curPeriod());
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState(() =>
+    (initialRequest ?? pendingRequests[0])?.note ?? "",
+  );
   const [addBusy, setAddBusy] = useState(false);
+
+  const selectBotReq = (req: AdvanceRequest | null) => {
+    setActiveBotReq(req);
+    if (req) {
+      setAmount(String(req.amount));
+      setNote(req.note || "");
+    }
+  };
 
   const load = async () => {
     setBusy(true);
@@ -938,15 +1008,55 @@ export function AdvancesModal({
     const cnt = mode === "single" ? 1 : Math.max(2, Math.floor(instCount));
     setAddBusy(true);
     try {
-      await addEmployeeAdvance(emp.id, amt, mode, cnt, startPeriod, note);
-      toast(
-        mode === "single"
-          ? `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} تُخصم على راتب ${startPeriod} ✅`
-          : `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} مقسّطة على ${cnt} رواتب ابتداءً من ${startPeriod} ✅`,
-      );
+      if (activeBotReq) {
+        await decideAdvanceRequest(
+          activeBotReq.id,
+          true,
+          amt,
+          mode,
+          cnt,
+          startPeriod,
+          note,
+        );
+        toast(
+          mode === "single"
+            ? `تمت الموافقة على طلب السلفة (${fmtMoney(amt)} ${curSym}) على راتب ${startPeriod} وإشعار الموظف عبر تلجرام ✅`
+            : `تمت الموافقة على طلب السلفة (${fmtMoney(amt)} ${curSym}) مقسّطة على ${cnt} أشهر ابتداءً من ${startPeriod} وإشعار الموظف عبر تلجرام ✅`,
+        );
+        setActiveBotReq(null);
+        onRequestDecided?.();
+      } else {
+        await addEmployeeAdvance(emp.id, amt, mode, cnt, startPeriod, note);
+        toast(
+          mode === "single"
+            ? `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} تُخصم على راتب ${startPeriod} ✅`
+            : `تم تسجيل سلفة بمبلغ ${fmtMoney(amt)} ${curSym} مقسّطة على ${cnt} رواتب ابتداءً من ${startPeriod} ✅`,
+        );
+      }
       setAmount("");
       setNote("");
       await load();
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setAddBusy(false);
+    }
+  };
+
+  const rejectBotReq = async (req: AdvanceRequest) => {
+    const ok = await confirm(
+      `رفض طلب السلفة المرسل من البوت بمبلغ ${fmtMoney(req.amount)} ${curSym} وإبلاغ الموظف على تلجرام؟`,
+      { title: "❌ رفض طلب السلفة", yes: "رفض الطلب" },
+    );
+    if (!ok) return;
+    setAddBusy(true);
+    try {
+      await decideAdvanceRequest(req.id, false, null, null, null, null, note);
+      toast("تم رفض طلب السلفة وإشعار الموظف على تلجرام");
+      setActiveBotReq(null);
+      setAmount("");
+      setNote("");
+      onRequestDecided?.();
     } catch (e) {
       toast(String(e), "err");
     } finally {
@@ -1037,10 +1147,77 @@ export function AdvancesModal({
         </div>
       </div>
 
+      {/* طلبات السلف الواردة من البوت لهذا الموظف */}
+      {pendingRequests.length > 0 && (
+        <div className="mb-4 p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 space-y-2">
+          <div className="text-xs font-extrabold text-indigo-900">
+            📥 طلبات سلفة واردة من الموظف عبر بوت تلجرام ({pendingRequests.length}):
+          </div>
+          {pendingRequests.map((req) => (
+            <div
+              key={req.id}
+              className={`flex items-center justify-between gap-2 p-2.5 rounded-lg border text-xs ${
+                activeBotReq?.id === req.id
+                  ? "bg-white border-indigo-400 shadow-sm"
+                  : "bg-indigo-50/50 border-indigo-200"
+              }`}
+            >
+              <div>
+                <span className="font-extrabold text-sm text-indigo-800">
+                  {fmtMoney(req.amount)} {curSym}
+                </span>
+                {req.note && (
+                  <span className="text-slate-600 mr-2">— {req.note}</span>
+                )}
+                <span className="text-slate-400 font-mono mr-2" dir="ltr">
+                  ({req.created_at.slice(0, 10)})
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {activeBotReq?.id !== req.id ? (
+                  <button
+                    type="button"
+                    className="px-2.5 py-1 rounded bg-indigo-600 text-white font-bold"
+                    onClick={() => selectBotReq(req)}
+                  >
+                    تعبئة في النموذج
+                  </button>
+                ) : (
+                  <span className="badge bg-indigo-100 text-indigo-800 font-bold">
+                    مُعبّأ في النموذج أدناه ↓
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold"
+                  onClick={() => rejectBotReq(req)}
+                  disabled={addBusy}
+                >
+                  ❌ رفض الطلب
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* نموذج إنشاء سلفة جديدة */}
       <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3 mb-5">
-        <div className="font-extrabold text-sm text-slate-800">
-          ➕ إنشاء سلفة جديدة
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-extrabold text-sm text-slate-800">
+            {activeBotReq
+              ? `✅ اعتماد طلب السلفة من البوت (#${activeBotReq.id}) وتحديد طريقة الخصم`
+              : "➕ إنشاء سلفة جديدة"}
+          </div>
+          {activeBotReq && (
+            <button
+              type="button"
+              className="text-xs text-slate-500 hover:underline"
+              onClick={() => selectBotReq(null)}
+            >
+              إلغاء ربط الطلب (إدخال سلفة عادية)
+            </button>
+          )}
         </div>
         <div className="grid sm:grid-cols-3 gap-3">
           <div>
@@ -1129,7 +1306,11 @@ export function AdvancesModal({
             onClick={createAdvance}
             disabled={addBusy}
           >
-            {addBusy ? "جارٍ الحفظ…" : "💾 إضافة السلفة"}
+            {addBusy
+              ? "جارٍ الحفظ…"
+              : activeBotReq
+                ? "✅ اعتماد السلفة وإبلاغ الموظف على تلجرام"
+                : "💾 إضافة السلفة"}
           </button>
         </div>
       </div>
@@ -1282,6 +1463,10 @@ export function AdvancesModal({
 const LEAVE_LABELS: Record<string, string> = {
   annual: "إجازة سنوية",
   sick: "إجازة مرضية",
+  unpaid: "إجازة بدون راتب",
+  emergency: "إجازة طارئة / ظرف عائلي",
+  marriage: "إجازة زواج",
+  bereavement: "إجازة وفاة (عزاء)",
   comp: "عطلة تعويضية (يوم بدل)",
 };
 
@@ -1755,10 +1940,20 @@ export function PunchesModal({
               <select
                 className="input"
                 value={lvType}
-                onChange={(e) => setLvType(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setLvType(v);
+                  if (v === "unpaid") setLvPaid(false);
+                  else if (v === "annual" || v === "sick" || v === "marriage" || v === "bereavement")
+                    setLvPaid(true);
+                }}
               >
-                <option value="annual">إجازة سنوية</option>
+                <option value="annual">إجازة سنوية مدفوعة</option>
                 <option value="sick">إجازة مرضية</option>
+                <option value="unpaid">إجازة بدون راتب</option>
+                <option value="emergency">إجازة طارئة / ظرف عائلي</option>
+                <option value="marriage">إجازة زواج</option>
+                <option value="bereavement">إجازة وفاة (عزاء)</option>
               </select>
             </div>
             <div>

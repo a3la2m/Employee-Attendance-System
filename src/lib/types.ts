@@ -473,3 +473,49 @@ export interface AbsenceNote {
   created_at: string;
 }
 
+/** طلب إجازة مرسل من البوت. */
+export interface LeaveRequest {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  annual_leave_balance: number;
+  leave_type: "annual" | "sick" | "unpaid" | "emergency" | "marriage" | "bereavement" | string;
+  paid: boolean;
+  from_date: string;
+  to_date: string;
+  days_count: number;
+  note: string;
+  has_attachment: boolean;
+  attachment_data: string | null;
+  status: "pending" | "approved" | "rejected" | string;
+  admin_note: string;
+  created_at: string;
+  decided_at: string | null;
+}
+
+/** طلب سلفة مرسل من البوت. */
+export interface AdvanceRequest {
+  id: number;
+  employee_id: number;
+  employee_name: string;
+  amount: number;
+  note: string;
+  status: "pending" | "approved" | "rejected" | string;
+  advance_id: number | null;
+  admin_note: string;
+  created_at: string;
+  decided_at: string | null;
+}
+
+/** رسالة في سجل محادثات بوت تلجرام. */
+export interface TelegramChatMessage {
+  id: number;
+  chat_id: string;
+  employee_id: number | null;
+  employee_name: string;
+  employee_phone: string;
+  direction: "in" | "out" | string;
+  body: string;
+  attachment_data: string | null;
+  created_at: string;
+}

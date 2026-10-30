@@ -13,9 +13,11 @@ import {
   telegramSetBotAllowed,
   telegramBroadcast,
   absenceNotesList,
+  telegramChatMessages,
 } from "../lib/api";
 import type {
   AbsenceNote,
+  TelegramChatMessage,
   TelegramLink,
   TelegramSupervisor,
 } from "../lib/types";
@@ -46,8 +48,18 @@ const PERMS: { key: string; label: string; hint: string }[] = [
   },
   {
     key: "tg_allow_salary",
-    label: "آخر مدفوع",
+    label: "آخر راتب",
     hint: "الأمر /راتب — عرض آخر راتب مدفوع",
+  },
+  {
+    key: "tg_allow_leave",
+    label: "طلبات الإجازات",
+    hint: "الطلب من البوت — سنوية / مرضية بمرفق / بدون راتب / طارئة",
+  },
+  {
+    key: "tg_allow_advance",
+    label: "طلبات السلف",
+    hint: "طلب سلفة مالية من البوت بمبلغ يختاره الموظف",
   },
   {
     key: "tg_allow_reason",
@@ -65,8 +77,8 @@ export default function Telegram({ toast }: { toast: Toast }) {
   // إعدادات البوت (نُعدّلها محلياً ثم نحفظ)
   const [token, setToken] = useState("");
   const [enabled, setEnabled] = useState(false);
-  const [eodEnabled, setEodEnabled] = useState(true);
-  const [eodTime, setEodTime] = useState("17:00");
+  const [alertStart, setAlertStart] = useState(true);
+  const [alertEnd, setAlertEnd] = useState(true);
   const [perms, setPerms] = useState<Record<string, boolean>>({});
   const [showToken, setShowToken] = useState(false);
 
@@ -91,13 +103,38 @@ export default function Telegram({ toast }: { toast: Toast }) {
   const [bcText, setBcText] = useState(BC_PREFIX);
   const [broadcasting, setBroadcasting] = useState(false);
 
+  // نافذة سجل المحادثات مع الموظفين
+  const [logOpen, setLogOpen] = useState(false);
+  const [chatMsgs, setChatMsgs] = useState<TelegramChatMessage[]>([]);
+  const [logEmpId, setLogEmpId] = useState<number | "all">("all");
+  const [logSearch, setLogSearch] = useState("");
+  const [logLoading, setLogLoading] = useState(false);
+  const [logPreviewImg, setLogPreviewImg] = useState<string | null>(null);
+
+  const loadChatLog = async () => {
+    setLogLoading(true);
+    try {
+      const rows = await telegramChatMessages(null, null, 500);
+      setChatMsgs(rows);
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setLogLoading(false);
+    }
+  };
+
+  const openChatLog = () => {
+    setLogOpen(true);
+    loadChatLog();
+  };
+
   const load = async () => {
     try {
       const s = await getSettings();
       setToken(s.tg_token ?? "");
       setEnabled((s.tg_enabled ?? "0") !== "0");
-      setEodEnabled((s.tg_eod_enabled ?? "1") !== "0");
-      setEodTime(s.tg_eod_time || "17:00");
+      setAlertStart((s.tg_alert_start ?? "1") !== "0");
+      setAlertEnd((s.tg_alert_end ?? "1") !== "0");
       const p: Record<string, boolean> = {};
       for (const it of PERMS) p[it.key] = (s[it.key] ?? "1") !== "0";
       setPerms(p);
@@ -162,8 +199,8 @@ export default function Telegram({ toast }: { toast: Toast }) {
       const items: Record<string, string> = {
         tg_token: token.trim(),
         tg_enabled: enabled ? "1" : "0",
-        tg_eod_enabled: eodEnabled ? "1" : "0",
-        tg_eod_time: eodTime || "17:00",
+        tg_alert_start: alertStart ? "1" : "0",
+        tg_alert_end: alertEnd ? "1" : "0",
       };
       await saveSettingsBulk(items);
       toast("تم حفظ إعدادات البوت ✅", "ok");
@@ -359,6 +396,13 @@ export default function Telegram({ toast }: { toast: Toast }) {
           >
             {enabled && token ? "⏸️ إيقاف البوت" : "▶️ تشغيل البوت"}
           </button>
+          <button
+            type="button"
+            className="btn-ghost border border-slate-200 bg-white hover:bg-slate-50 font-bold"
+            onClick={openChatLog}
+          >
+            💬 سجل المحادثات
+          </button>
           <button className="btn-primary" onClick={openBroadcast}>
             📣 إرسال تعميم
           </button>
@@ -423,22 +467,29 @@ export default function Telegram({ toast }: { toast: Toast }) {
           <label className="flex items-center gap-2 text-sm font-medium">
             <input
               type="checkbox"
-              checked={eodEnabled}
-              onChange={(e) => setEodEnabled(e.target.checked)}
+              checked={alertStart}
+              onChange={(e) => setAlertStart(e.target.checked)}
               className="accent-indigo-600 w-4 h-4"
             />
-            تنبيه نهاية اليوم تلقائياً
+            تنبيه عدم تسجيل الدخول (بعد بداية الشفت بربع ساعة)
           </label>
           <label className="flex items-center gap-2 text-sm font-medium">
-            وقت نهاية اليوم
             <input
-              type="time"
-              dir="ltr"
-              className="input w-32"
-              value={eodTime}
-              onChange={(e) => setEodTime(e.target.value)}
+              type="checkbox"
+              checked={alertEnd}
+              onChange={(e) => setAlertEnd(e.target.checked)}
+              className="accent-indigo-600 w-4 h-4"
             />
+            تنبيه نهاية الشفت — الخروج المفقود (بعد نهاية الدوام بثلاث ساعات)
           </label>
+        </div>
+
+        <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3">
+          ⏰ يُحسب الوقت من شفت كل موظف في «الإعدادات ← الشفتات»: تنبيه الغياب
+          بعد بداية شفته بربع ساعة، وتنبيه الخروج بعد نهاية ورديته بثلاث ساعات
+          (وكذلك ملخص نهاية اليوم للمشرفين عند آخر وردية + 3 ساعات — بلا وقت
+          ثابت). إن كان الجهاز مطفأً أو البرنامج غير عامل عند الموعد، يُرسل
+          التنبيه فور عودة البرنامج في نفس اليوم.
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -794,7 +845,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
             <b>5) أرقام الموظفين:</b> تأكد من شاشة «الموظفون» أن رقم هاتف كل
             موظف مسجّل في بطاقته، وأن الموظف «فعّال». ثم يفتح الموظف البوت ←
             <bdi dir="ltr"> /start</bdi> ← «📱 مشاركة رقم هاتفي» ← تظهر له أزرار
-            جاهزة: دوام اليوم، كشف الشهر، شهر آخر، آخر مدفوع، سبب الغياب —
+            جاهزة: دوام اليوم، كشف الشهر، شهر آخر، آخر راتب، رصيد الإجازات، طلب إجازة، طلب سلفة، سبب الغياب —
             يضغط بدل الكتابة.
           </li>
           <li className="bg-slate-50 border border-slate-200 rounded-lg p-3">
@@ -808,9 +859,12 @@ export default function Telegram({ toast }: { toast: Toast }) {
             بطاقة الموظف بشاشة «الموظفون».
           </li>
           <li className="bg-slate-50 border border-slate-200 rounded-lg p-3">
-            <b>8) نهاية اليوم:</b> في القسم 1 اضبط الوقت (مثلاً 17:00). عند
-            بلوغه يرسل البوت لكل موظف لم يختم خروجه/حضوره تنبيهاً، ويرسل
-            للمشرفين ملخص اليوم كاملاً — مرة واحدة يومياً.
+            <b>8) التنبيهات حسب الشفت:</b> لكل موظف حسب ورديته في «الإعدادات ←
+            الشفتات» — تنبيه غياب بعد بداية دوامه بربع ساعة إن لم يسجّل حضوره،
+            وتنبيه خروج مفقود بعد نهاية ورديته بثلاث ساعات إن لم يسجّل انصرافه،
+            وملخص نهاية اليوم للمشرفين بعد آخر وردية بثلاث ساعات — مرة واحدة
+            يومياً. إن كان الجهاز مطفأً أو البرنامج غير عامل عند الموعد، يُرسل
+            التنبيه فور عودة البرنامج في نفس اليوم.
           </li>
           <li className="bg-slate-50 border border-slate-200 rounded-lg p-3">
             <b>9) التعميمات:</b> اضغط زر <b>«📣 إرسال تعميم»</b> أعلى الصفحة،
@@ -821,7 +875,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
 
         <div className="text-sm bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-lg p-3">
           💡 لا حاجة لحفظ الأوامر: بعد ربط الحساب تظهر <b>أزرار جاهزة</b> أسفل
-          المحادثة (دوام اليوم · كشف الشهر · شهر آخر · آخر مدفوع · سبب الغياب).
+          المحادثة (دوام اليوم · كشف الشهر · شهر آخر · آخر راتب · رصيد الإجازات · طلب إجازة · طلب سلفة · سبب الغياب).
           زر «شهر آخر» يعرض الأشهر بالأرقام (مثل <bdi dir="ltr">10/2026</bdi>)
           للاختيار، وزر «سبب الغياب» يعرض أسباباً جاهزة. الكتابة اليدوية بالأوامر أدناه تبقى متاحة لمن يفضّلها.
         </div>
@@ -836,7 +890,10 @@ export default function Telegram({ toast }: { toast: Toast }) {
                 ["/اليوم", "هل ختمت دخولك وخروجك اليوم؟"],
                 ["/كشف", "كشف دوام الشهر الحالي"],
                 ["/كشف \u20662026-09\u2069", "كشف شهر محدد"],
-                ["/راتب", "آخر مدفوع"],
+                ["/راتب", "آخر راتب"],
+                ["/رصيد", "رصيد الإجازات السنوية"],
+                ["/اجازة", "طلب إجازة (سنوية / مرضية بمرفق / بدون راتب / طارئة)"],
+                ["/سلفة", "طلب سلفة مالية"],
                 ["/سبب ظرف عائلي", "تسجيل سبب الغياب"],
                 ["/الغاء", "إلغاء ربط المحادثة"],
                 ["/مساعدة", "قائمة الأوامر"],
@@ -973,6 +1030,306 @@ export default function Telegram({ toast }: { toast: Toast }) {
           </div>
         </Modal>
       )}
+
+      {logOpen && (
+        <ChatLogModal
+          messages={chatMsgs}
+          links={links}
+          loading={logLoading}
+          empId={logEmpId}
+          setEmpId={setLogEmpId}
+          search={logSearch}
+          setSearch={setLogSearch}
+          onRefresh={loadChatLog}
+          onClose={() => setLogOpen(false)}
+          previewImg={logPreviewImg}
+          setPreviewImg={setLogPreviewImg}
+        />
+      )}
     </div>
+  );
+}
+
+function ChatLogModal({
+  messages,
+  links,
+  loading,
+  empId,
+  setEmpId,
+  search,
+  setSearch,
+  onRefresh,
+  onClose,
+  previewImg,
+  setPreviewImg,
+}: {
+  messages: TelegramChatMessage[];
+  links: TelegramLink[];
+  loading: boolean;
+  empId: number | "all";
+  setEmpId: (v: number | "all") => void;
+  search: string;
+  setSearch: (v: string) => void;
+  onRefresh: () => void;
+  onClose: () => void;
+  previewImg: string | null;
+  setPreviewImg: (v: string | null) => void;
+}) {
+  const q = search.trim().toLowerCase();
+
+  // قائمة الموظفين الذين لديهم محادثات أو مرتبطين
+  const contacts = useMemo(() => {
+    const map = new Map<
+      number,
+      { id: number; name: string; phone: string; count: number; lastAt: string }
+    >();
+    for (const l of links) {
+      if (l.chat_id) {
+        map.set(l.employee_id, {
+          id: l.employee_id,
+          name: l.name,
+          phone: l.phone,
+          count: 0,
+          lastAt: l.linked_at || "",
+        });
+      }
+    }
+    for (const m of messages) {
+      if (m.employee_id != null) {
+        const cur = map.get(m.employee_id);
+        if (cur) {
+          cur.count += 1;
+          if (m.created_at > cur.lastAt) cur.lastAt = m.created_at;
+        } else {
+          map.set(m.employee_id, {
+            id: m.employee_id,
+            name: m.employee_name || `#${m.employee_id}`,
+            phone: m.employee_phone || "",
+            count: 1,
+            lastAt: m.created_at,
+          });
+        }
+      }
+    }
+    return Array.from(map.values())
+      .filter(
+        (c) =>
+          !q ||
+          c.name.toLowerCase().includes(q) ||
+          c.phone.toLowerCase().includes(q) ||
+          messages.some(
+            (m) =>
+              m.employee_id === c.id && m.body.toLowerCase().includes(q),
+          ),
+      )
+      .sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+  }, [links, messages, q]);
+
+  // الرسائل المعروضة (مرتبة زمنياً من الأقدم للأحدث داخل المحادثة، أو الأحدث أولاً عند عرض الكل)
+  const filteredMsgs = useMemo(() => {
+    const list = messages.filter((m) => {
+      if (empId !== "all" && m.employee_id !== empId) return false;
+      if (!q) return true;
+      return (
+        m.body.toLowerCase().includes(q) ||
+        m.employee_name.toLowerCase().includes(q) ||
+        m.employee_phone.toLowerCase().includes(q)
+      );
+    });
+    return empId === "all" ? list : [...list].reverse();
+  }, [messages, empId, q]);
+
+  return (
+    <Modal
+      onClose={onClose}
+      title="💬 سجل محادثات بوت تلجرام مع الموظفين"
+      panelClass="max-w-5xl"
+      backdropClass="z-40"
+    >
+      <div className="space-y-3">
+        {/* شريط البحث والتحديث */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            className="input flex-1 min-w-[240px]"
+            placeholder="🔍 ابحث باسم الموظف أو رقم الهاتف أو نص الرسالة…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
+          {search && (
+            <button
+              type="button"
+              className="btn-ghost !py-1.5 text-xs"
+              onClick={() => setSearch("")}
+            >
+              مسح البحث
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn-ghost !py-1.5 text-xs"
+            onClick={onRefresh}
+            disabled={loading}
+          >
+            {loading ? "… يحدّث" : "🔄 تحديث السجل"}
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-[240px_1fr] gap-3 h-[62vh]">
+          {/* قائمة الموظفين على الجانب */}
+          <div className="border border-slate-200 rounded-xl overflow-y-auto bg-slate-50 p-2 space-y-1">
+            <button
+              type="button"
+              onClick={() => setEmpId("all")}
+              className={`w-full text-right px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-between transition ${
+                empId === "all"
+                  ? "bg-indigo-600 text-white"
+                  : "hover:bg-slate-200/70 text-slate-700"
+              }`}
+            >
+              <span>👥 كل المحادثات</span>
+              <span
+                className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                  empId === "all"
+                    ? "bg-white/20 text-white"
+                    : "bg-slate-200 text-slate-600"
+                }`}
+              >
+                {messages.length}
+              </span>
+            </button>
+
+            {contacts.map((c) => {
+              const active = empId === c.id;
+              return (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setEmpId(c.id)}
+                  className={`w-full text-right px-3 py-2 rounded-lg text-xs transition ${
+                    active
+                      ? "bg-indigo-600 text-white"
+                      : "hover:bg-slate-200/70 text-slate-800"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-bold truncate">{c.name}</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        active
+                          ? "bg-white/20 text-white"
+                          : "bg-slate-200 text-slate-600"
+                      }`}
+                    >
+                      {c.count}
+                    </span>
+                  </div>
+                  {c.phone && (
+                    <div
+                      className={`text-[10px] font-mono mt-0.5 ${
+                        active ? "text-indigo-100" : "text-slate-400"
+                      }`}
+                      dir="ltr"
+                    >
+                      {c.phone}
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* نافذة عرض الرسائل */}
+          <div className="border border-slate-200 rounded-xl bg-white flex flex-col overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between text-xs">
+              <span className="font-extrabold text-slate-700">
+                {empId === "all"
+                  ? "📋 أحدث الرسائل من جميع الموظفين"
+                  : `💬 محادثة: ${
+                      contacts.find((c) => c.id === empId)?.name ?? "الموظف"
+                    }`}
+              </span>
+              <span className="text-slate-400">
+                {filteredMsgs.length} رسالة
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/40">
+              {filteredMsgs.length === 0 ? (
+                <div className="h-full grid place-content-center text-center text-sm text-slate-400">
+                  لا توجد رسائل مطابقة للعرض حالياً.
+                </div>
+              ) : (
+                filteredMsgs.map((m) => {
+                  const isIn = m.direction === "in";
+                  return (
+                    <div
+                      key={m.id}
+                      className={`flex flex-col ${
+                        isIn ? "items-start" : "items-end"
+                      }`}
+                    >
+                      <div
+                        className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-xs space-y-1.5 shadow-sm border ${
+                          isIn
+                            ? "bg-white border-slate-200 text-slate-800 rounded-tr-sm"
+                            : "bg-indigo-600 border-indigo-600 text-white rounded-tl-sm"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3 text-[10px] opacity-80">
+                          <span className="font-bold">
+                            {isIn
+                              ? `👤 ${m.employee_name}`
+                              : `🤖 البوت ← ${m.employee_name}`}
+                          </span>
+                          <span className="font-mono" dir="ltr">
+                            {m.created_at.slice(0, 16).replace("T", " ")}
+                          </span>
+                        </div>
+                        <div className="whitespace-pre-wrap leading-relaxed">
+                          {m.body}
+                        </div>
+                        {m.attachment_data && (
+                          <img
+                            src={m.attachment_data}
+                            alt="مرفق"
+                            className="max-h-40 rounded-lg border border-slate-200 cursor-pointer mt-1"
+                            onClick={() => setPreviewImg(m.attachment_data)}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {previewImg && (
+        <Modal
+          onClose={() => setPreviewImg(null)}
+          title="📎 معاينة الصورة المرفقة"
+          panelClass="max-w-3xl"
+          backdropClass="z-50"
+        >
+          <div className="flex flex-col items-center gap-3">
+            <img
+              src={previewImg}
+              alt="مرفق"
+              className="max-h-[75vh] w-auto rounded-lg border border-slate-200"
+            />
+            <button
+              type="button"
+              className="btn-ghost self-end"
+              onClick={() => setPreviewImg(null)}
+            >
+              إغلاق
+            </button>
+          </div>
+        </Modal>
+      )}
+    </Modal>
   );
 }

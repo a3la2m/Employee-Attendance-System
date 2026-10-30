@@ -319,4 +319,52 @@ pub struct AbsenceNote {
     pub created_at: String,
 }
 
+/// طلب إجازة مرسل من البوت.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LeaveRequest {
+    pub id: i64,
+    pub employee_id: i64,
+    pub employee_name: String,
+    pub annual_leave_balance: f64,
+    pub leave_type: String,
+    pub paid: bool,
+    pub from_date: String,
+    pub to_date: String,
+    pub days_count: i64,
+    pub note: String,
+    pub has_attachment: bool,
+    pub attachment_data: Option<String>,
+    pub status: String,
+    pub admin_note: String,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+}
 
+/// طلب سلفة مرسل من البوت.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvanceRequest {
+    pub id: i64,
+    pub employee_id: i64,
+    pub employee_name: String,
+    pub amount: f64,
+    pub note: String,
+    pub status: String,
+    pub advance_id: Option<i64>,
+    pub admin_note: String,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+}
+
+/// رسالة مسجلة في سجل محادثات بوت تلجرام.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramChatMessage {
+    pub id: i64,
+    pub chat_id: String,
+    pub employee_id: Option<i64>,
+    pub employee_name: String,
+    pub employee_phone: String,
+    pub direction: String,
+    pub body: String,
+    pub attachment_data: Option<String>,
+    pub created_at: String,
+}

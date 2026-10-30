@@ -93,6 +93,9 @@ fn spawn_auto_sync(app: tauri::AppHandle) {
 /// الشريط الجانبي) وتظهر كإشعارات سطح المكتب عند حدوثها.
 fn spawn_notifications(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        // فحص فوري عند الإقلاع: التنبيهات التي حان وقتها أثناء إيقاف البرنامج
+        // أو نوّم الجهاز تُرسَل الآن (الشرط «حان الموعد» + منع التكرار ليومه).
+        notify_tick(&app);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
             notify_tick(&app);
@@ -106,7 +109,8 @@ fn notify_tick(app: &tauri::AppHandle) {
     use tauri_plugin_notification::NotificationExt;
     let state = app.state::<AppState>();
     let today;
-    let fresh; // تنبيهات جديدة (خروج مفقود / خروج بلا دخول)
+    let mut fresh; // تنبيهات جديدة (خروج مفقود / خروج بلا دخول)
+    let alerts; // تنبيهات الشفت (غياب/خروج مفقود) ذات رسالة الموظف المباشرة
     let lates; // المتأخرون اليوم (يُحفظون في السجل أيضاً)
     {
         let Ok(conn) = state.db.lock() else { return };
@@ -121,6 +125,16 @@ fn notify_tick(app: &tauri::AppHandle) {
         today = now.format("%Y-%m-%d").to_string();
 
         let now_min = now.hour() as i64 * 60 + now.minute() as i64;
+
+        // 0) تنبيهات الشفت (رسالة الموظف على تلجرام) — تُفحص أولاً لأنها تملك
+        //    تنبيه «غياب» نفسه: أول من يحفظه يمنع تكراره.
+        alerts = commands::shift_alerts_due(
+            &conn,
+            &today,
+            now_min,
+            s.get("tg_alert_start").map(|v| v != "0").unwrap_or(true),
+            s.get("tg_alert_end").map(|v| v != "0").unwrap_or(true),
+        );
 
         // 1) الأحداث الناقصة → تُفحص لكل موظف بعد بداية شفته بـ 15 دقيقة
         fresh = commands::detect_missing_events_at(&conn, &today, Some(now_min));
@@ -144,6 +158,13 @@ fn notify_tick(app: &tauri::AppHandle) {
             let _ = commands::accrue_leave_impl(&conn, now.date());
         }
     }
+
+    // تنبيهات الشفت التي فازت بالحفظ تدخل إشعار سطح المكتب والمشرفين
+    fresh.extend(alerts.iter().map(|a| a.fresh_line.clone()));
+    // رسائل تلجرام المباشرة للموظفين (إن كان البوت مفعّلاً)
+    crate::telegram::send_shift_alert_dms(app, &alerts);
+    // ملخص نهاية اليوم للمشرفين — بعد نهاية آخر شفت بـ 3 ساعات (بلا وقت ثابت)
+    crate::telegram::eod_tick(app);
 
     // 3) إشعارات سطح المكتب للتنبيهات الجديدة فقط
     if !fresh.is_empty() {
@@ -346,6 +367,12 @@ pub fn run() {
             if cleaned_future > 0 {
                 log::info!("cleaned {cleaned_future} future absence rows");
             }
+            // ترميز الصفوف القديمة من سجل المحادثة (callback_data خام مثل
+            // «adv:amt:500») إلى نص مقروء — مرة واحدة عند كل إقلاع.
+            let relabeled = telegram::rewrite_legacy_chat_log(&conn);
+            if relabeled > 0 {
+                log::info!("relabeled {relabeled} legacy chat-log rows");
+            }
             app.manage(AppState {
                 db: Mutex::new(conn),
                 base,
@@ -459,6 +486,11 @@ pub fn run() {
             telegram::absence_notes_list,
             telegram::telegram_set_bot_allowed,
             telegram::telegram_broadcast,
+            telegram::leave_requests_list,
+            telegram::decide_leave_request,
+            telegram::advance_requests_list,
+            telegram::decide_advance_request,
+            telegram::telegram_chat_messages,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

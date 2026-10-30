@@ -27,6 +27,9 @@ import type {
   TelegramSupervisor,
   TelegramLink,
   AbsenceNote,
+  LeaveRequest,
+  AdvanceRequest,
+  TelegramChatMessage,
 } from "./types";
 
 // --- الإعدادات ---
@@ -325,3 +328,50 @@ export const telegramUnlinkEmployee = (id: number) =>
   invoke<void>("telegram_unlink_employee", { id });
 export const absenceNotesList = (limit = 50) =>
   invoke<AbsenceNote[]>("absence_notes_list", { limit });
+
+export const leaveRequestsList = () =>
+  invoke<LeaveRequest[]>("leave_requests_list");
+export const decideLeaveRequest = (
+  id: number,
+  approve: boolean,
+  paid: boolean | null,
+  adminNote: string,
+) =>
+  invoke<void>("decide_leave_request", {
+    id,
+    approve,
+    paid,
+    adminNote,
+  });
+
+export const advanceRequestsList = () =>
+  invoke<AdvanceRequest[]>("advance_requests_list");
+export const decideAdvanceRequest = (
+  id: number,
+  approve: boolean,
+  amount: number | null,
+  mode: string | null,
+  installmentsCount: number | null,
+  startPeriod: string | null,
+  adminNote: string,
+) =>
+  invoke<void>("decide_advance_request", {
+    id,
+    approve,
+    amount,
+    mode,
+    installmentsCount,
+    startPeriod,
+    adminNote,
+  });
+
+export const telegramChatMessages = (
+  employeeId?: number | null,
+  search?: string | null,
+  limit = 300,
+) =>
+  invoke<TelegramChatMessage[]>("telegram_chat_messages", {
+    employeeId: employeeId ?? null,
+    search: search ?? null,
+    limit,
+  });

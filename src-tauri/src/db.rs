@@ -218,6 +218,58 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_absence_date ON absence_notes(date);
 
+        -- طلبات الإجازات المرسلة من البوت (مرضية بمرفق، سنوية مدفوعة، بدون راتب، طارئة...)
+        CREATE TABLE IF NOT EXISTS leave_requests (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id     INTEGER NOT NULL,
+            leave_type      TEXT NOT NULL,            -- annual | sick | unpaid | emergency | marriage | bereavement
+            paid            INTEGER NOT NULL DEFAULT 1,
+            from_date       TEXT NOT NULL,            -- YYYY-MM-DD
+            to_date         TEXT NOT NULL,            -- YYYY-MM-DD
+            days_count      INTEGER NOT NULL DEFAULT 1,
+            note            TEXT NOT NULL DEFAULT '',
+            attachment_data TEXT,                     -- data:image/jpeg;base64,... (للتقرير الطبي/المرفق)
+            status          TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+            admin_note      TEXT NOT NULL DEFAULT '',
+            created_at      TEXT NOT NULL,
+            decided_at      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_leave_req_status ON leave_requests(status, id DESC);
+
+        -- طلبات السلف المرسلة من البوت
+        CREATE TABLE IF NOT EXISTS advance_requests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            employee_id INTEGER NOT NULL,
+            amount      REAL NOT NULL,
+            note        TEXT NOT NULL DEFAULT '',
+            status      TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+            advance_id  INTEGER,
+            admin_note  TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL,
+            decided_at  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_adv_req_status ON advance_requests(status, id DESC);
+
+        -- سجل المحادثات مع الموظفين على بوت تلجرام (الواردة والصادرة)
+        CREATE TABLE IF NOT EXISTS telegram_messages (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id         TEXT NOT NULL,
+            employee_id     INTEGER,
+            direction       TEXT NOT NULL,            -- 'in' | 'out'
+            body            TEXT NOT NULL,
+            attachment_data TEXT,
+            created_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tg_msg_chat ON telegram_messages(chat_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_tg_msg_emp ON telegram_messages(employee_id, id DESC);
+
+        -- حالة الخطوات التفاعلية لمحادثة البوت (طلب إجازة / طلب سلفة)
+        CREATE TABLE IF NOT EXISTS telegram_flow_state (
+            chat_id     TEXT PRIMARY KEY,
+            state_json  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
+
         "#,
     )?;
 

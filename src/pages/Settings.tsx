@@ -40,7 +40,7 @@ const PAYROLL_KEYS = [
   { k: "transport_allow", label: "بدل المواصلات اليومي", step: "0.5" },
   { k: "overtime_rate_mult", label: "مضاعف العمل الإضافي", step: "0.1" },
   { k: "grace_late_min", label: "مهلة التأخير (دقيقة) — يُطرح من التأخير ويُنبَّه على ما زاد", step: "1" },
-  { k: "weekend_allow", label: "بدل العطلة (62 — مبلغ الأسبوع في الطريقة الأسبوعية، أو مبلغ كل يوم عطلة في الطريقة القديمة)", step: "1" },
+  { k: "weekend_allow", label: "مبلغ بدل الاجازه", step: "1" },
 ];
 
 const TIME_KEYS = [
@@ -250,6 +250,8 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   const set = (k: string, v: string) => setCfg((c) => ({ ...c, [k]: v }));
   const curSym =
     cfg.currency === "USD" ? "$" : cfg.currency === "JOD" ? "د.أ" : "₪";
+  // مبلغ بدل الإجازة (يُقرأ حياً من مربع النص في الإعدادات — الافتراض 62)
+  const wAllow = Number(cfg.weekend_allow) > 0 ? Number(cfg.weekend_allow) : 62;
 
   const saveAll = async () => {
     try {
@@ -637,18 +639,21 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
               onChange={(e) => set("weekend_pay_mode", e.target.value)}
             >
               <option value="weekly">
-                الأسبوعي — 62 عن الأسبوع ÷ 6 أيام (تُخصم نصيب الغياب)
+                الأسبوعي — {wAllow} عن الأسبوع ÷ 6 أيام (تُخصم نصيب الغياب)
               </option>
-              <option value="per_day">لكل يوم عطلة — 62 عن كل يوم عطلة أسبوعية</option>
+              <option value="per_day">
+                لكل يوم عطلة — {wAllow} عن كل يوم عطلة أسبوعية
+              </option>
             </select>
           </div>
         </div>
         <p className="text-xs text-slate-500 mt-3 leading-relaxed">
           الأسبوع يبدأ <b>السبت</b> وينتهي <b>الجمعة</b>: الجمعة عطلة أسبوعية مدفوعة
-          تُسجَّل تلقائياً في الحضور بلا بصمة. في الطريقة الأسبوعية يُقسَّم مبلغ الأسبوع
-          (62) على ستة أيام دوام (السبت→الخميس) ويُدفع بنسبة الدوام الفعلي — كل يوم غياب
-          يُخصم منه 62÷6 — ودوام الجمعة يُدفع عادياً ويبقى بدل الأسبوع حسب نسبة دوام أيامه
-          الأُخرى. في الطريقة الثانية يُدفع 62 كامل عن كل يوم عطلة مستحق. تُطبَّق فور الحفظ
+          تُسجَّل تلقائياً في الحضور بلا بصمة. في الطريقة الأسبوعية يُقسَّم مبلغ
+          «مبلغ بدل الاجازه» ({wAllow}) على ستة أيام دوام (السبت→الخميس) ويُدفع بنسبة
+          الدوام الفعلي — كل يوم غياب يُخصم منه {wAllow}÷6 — ودوام الجمعة يُدفع عادياً
+          ويبقى بدل الأسبوع حسب نسبة دوام أيامه الأُخرى. في الطريقة الثانية يُدفع{" "}
+          {wAllow} كامل عن كل يوم عطلة مستحق. تُطبَّق فور الحفظ
           على الكشف (لا تحتاج إعادة احتساب الحضور).
         </p>
       </div>

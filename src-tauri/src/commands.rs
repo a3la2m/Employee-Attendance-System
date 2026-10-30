@@ -1317,6 +1317,9 @@ fn resolve_work_on_leave(
             "annual" => "سنوية",
             "sick" => "مرضية",
             "comp" => "عطلة تعويضية",
+            "emergency" => "طارئة",
+            "marriage" => "زواج",
+            "bereavement" => "عزاء",
             _ => "بدون أجر",
         };
         let tail = if refunded {
@@ -1324,7 +1327,7 @@ fn resolve_work_on_leave(
         } else {
             ""
         };
-        insert_notification(
+        if insert_notification(
             conn,
             "leave_work",
             Some(employee_id),
@@ -1333,12 +1336,34 @@ fn resolve_work_on_leave(
                 "دوّم {name} يوم {ds} أثناء إجازة {ty_name} — أُلغيت الإجازة عن هذا اليوم{tail}، وأُعيد احتسابه حضوراً"
             ),
             &ds,
-        );
+        ) {
+            // إبلاغ الموظف على تلجرام إن كان مرتبطاً والوصول مسموحاً
+            let st_map = settings_map(conn);
+            if st_map.get("tg_enabled").map(|v| v != "0").unwrap_or(false) {
+                let token = st_map.get("tg_token").cloned().unwrap_or_default();
+                let chat: Option<String> = conn
+                    .query_row(
+                        "SELECT telegram_chat_id FROM employees WHERE id=?1 AND active=1 AND bot_allowed=1",
+                        [employee_id],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
+                    .ok()
+                    .flatten();
+                if !token.trim().is_empty() {
+                    if let Some(c) = chat.filter(|c| !c.trim().is_empty()) {
+                        let msg = format!(
+                            "🔄 سُجّلت لك بصمة حضور يوم {ds} أثناء إجازة {ty_name} — أُلغيت الإجازة عن هذا اليوم تلقائياً{tail}."
+                        );
+                        crate::telegram::send_async(token, c, Some(employee_id), msg);
+                    }
+                }
+            }
+        }
     }
 }
 
 /// يعيد احتساب أيام الحضور لموظف/لكل الموظفين بين تاريخين.
-fn recompute_range(
+pub(crate) fn recompute_range(
     state: &AppState,
     from: &NaiveDate,
     to: &NaiveDate,
@@ -3300,6 +3325,203 @@ pub fn detect_missing_events_at(
     fresh
 }
 
+// --------------------------------------------------------- تنبيهات الشفتات
+
+/// تنبيه شفت حان موعده — يُحفظ في سجل التنبيهات (منع التكرار ليومه) ثم يُرسَل
+/// كرسالة تلجرام مباشرة للموظف. الموعد يُحسب ك«ما بعد» لا كلحظة دقيقة
+/// (البداية + 15 دقيقة، والنهاية + 3 ساعات) فيُرسل ما فات أيضاً عند إعادة
+/// تشغيل البرنامج أو استيقاظ الجهاز بعد نوّم.
+#[derive(Debug, Clone)]
+pub struct ShiftAlert {
+    /// نوع التنبيه في السجل: absent | no_checkout | absent_eod.
+    pub kind: String,
+    pub employee_id: i64,
+    pub name: String,
+    /// محادثة تلجرام الموظف — None إن لم تكن مربوطة/مسموحة (يبقى السجل).
+    pub chat: Option<String>,
+    pub title: String,
+    pub body: String,
+    /// نص الرسالة المباشرة للموظف.
+    pub dm: String,
+    /// السطر الذي يظهر في إشعار سطح المكتب وإشعار المشرفين.
+    pub fresh_line: String,
+}
+
+/// تنبيهات شفت كل موظف التي حان وقتها الآن:
+/// 1) `start_on` — غياب: مرّت ربع ساعة على بداية شفته ولم يسجّل دخولاً
+///    (بنفس شروط تنبيه الغياب القديم، وبنفس مفتاح السجل «absent»).
+/// 2) `end_on` — نهاية الشفت: سجّل دخوله ولم يسجّل خروجاً بعد مرور 3 ساعات
+///    على نهاية ورديته (يحترم الورديات التي تتجاوز منتصف الليل)، أو لم
+///    يحضر أصلاً حتى نهاية ورديته + 3 ساعات.
+/// تُنادَى **قبل** detect_missing_events_at لأنها تملك تنبيه «غياب» نفسه:
+/// أول من يحفظه يمنع تكراره.
+pub fn shift_alerts_due(
+    conn: &Connection,
+    today: &str,
+    now_min: i64,
+    start_on: bool,
+    end_on: bool,
+) -> Vec<ShiftAlert> {
+    let mut out = Vec::new();
+    if !start_on && !end_on {
+        return out;
+    }
+    let s = settings_map(conn);
+    let base_ps = payroll_settings(&s);
+    let yesterday = chrono::NaiveDate::parse_from_str(today, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| today.to_string());
+
+    let mut st = match conn.prepare(
+        "SELECT a.employee_id, e.name, e.telegram_chat_id, e.bot_allowed, e.shift_id,
+                COALESCE(a.first_in,''), COALESCE(a.last_out,''), a.absent,
+                CASE WHEN a.leave_type IS NULL THEN 1 ELSE 0 END, a.manual, a.date, a.status
+         FROM attendance_days a JOIN employees e ON e.id = a.employee_id
+         WHERE a.date IN (?1, ?2) AND e.active = 1
+         ORDER BY e.name",
+    ) {
+        Ok(st) => st,
+        Err(_) => return out,
+    };
+    type Row = (
+        i64, String, Option<String>, i64, Option<i64>, String, String, i64, i64, i64, String, String,
+    );
+    let rows: Vec<Row> = st
+        .query_map(rusqlite::params![today, yesterday], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<i64>>(4).ok().flatten(),
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, i64>(9)?,
+                r.get::<_, String>(10)?,
+                r.get::<_, String>(11)?,
+            ))
+        })
+        .map(|it| it.flatten().collect())
+        .unwrap_or_default();
+
+    for (id, name, chat, bot_ok, shift_id, first_in, last_out, absent, no_leave, manual, date, status) in rows
+    {
+        // شفت الموظف الفعلي (وردية أو الوردية الرئيسية)
+        let (ws, start_min) = employee_shift_start_min(conn, &base_ps, shift_id);
+        let ps = shift_settings(conn, &base_ps, shift_id);
+        let we = ps.work_end.clone();
+        let end_min = parse_hhmm(&ps.work_end)
+            .map(|(h, m)| h as i64 * 60 + m as i64)
+            .unwrap_or(17 * 60 + 30);
+        let overnight = end_min <= start_min;
+        // رسالة الموظف تتطلب ربطاً نشطاً بالبوت
+        let dm_chat = chat
+            .filter(|c| !c.is_empty())
+            .filter(|_| bot_ok == 1);
+        let is_today = date == today;
+
+        // 1) تنبيه البداية: غياب بعد ربع ساعة من بداية الشفت
+        if start_on
+            && is_today
+            && absent == 1
+            && status == "absent"
+            && no_leave == 1
+            && manual == 0
+            && first_in.is_empty()
+            && now_min >= start_min + 15
+        {
+            let title = format!("غياب: {name}");
+            let body = format!("{name} غاب اليوم {today} دون بصمة ولا إجازة مسجّلة");
+            if insert_notification(conn, "absent", Some(id), &title, &body, today) {
+                out.push(ShiftAlert {
+                    kind: "absent".into(),
+                    employee_id: id,
+                    name: name.clone(),
+                    chat: dm_chat.clone(),
+                    title,
+                    body,
+                    dm: format!(
+                        "❌ {name}\nلم تُسجَّل حضورك اليوم ({today}) — مرّت ربع ساعة على بداية دوامك ({ws}).\nإن كان لديك عذر أرسله: /سبب <السبب>"
+                    ),
+                    fresh_line: format!("{name} — غياب {today}"),
+                });
+            }
+        }
+
+        if !end_on {
+            continue;
+        }
+
+        // 2) نهاية الشفت — خروج مفقود: دخول بلا خروج بعد نهاية الوردية بـ 3 ساعات
+        if !first_in.is_empty() && last_out.is_empty() {
+            let due = end_min + 180 + if overnight { 1440 } else { 0 };
+            let due_now = if is_today {
+                due <= 1440 && now_min >= due
+            } else {
+                // وردية تجاوزت منتصف الليل: موعدها اليوم التالي
+                due > 1440 && now_min >= due - 1440
+            };
+            if due_now {
+                let tin = first_in.split('T').nth(1).map(|x| x[..5.min(x.len())].to_string()).unwrap_or_default();
+                let title = format!("خروج مفقود: {name}");
+                let body = format!(
+                    "سجّل {name} دخوله يوم {date}{} ولم يسجّل خروجه — مرّت 3 ساعات على نهاية ورديته {we}",
+                    if tin.is_empty() { String::new() } else { format!(" الساعة {tin}") }
+                );
+                if insert_notification(conn, "no_checkout", Some(id), &title, &body, &date) {
+                    out.push(ShiftAlert {
+                        kind: "no_checkout".into(),
+                        employee_id: id,
+                        name: name.clone(),
+                        chat: dm_chat.clone(),
+                        title,
+                        body,
+                        dm: format!(
+                            "⏳ {name}\nسجّلت دخولك يوم {date} ولم تسجّل انصرافك — مرّت ثلاث ساعات على نهاية دوامك ({we}).\nلا تنسَ الختم عند المغادرة."
+                        ),
+                        fresh_line: format!("{name} — خروج مفقود {date}"),
+                    });
+                }
+            }
+        }
+
+        // 3) نهاية الشفت — غياب مستمر: لم يحضر طوال الوردية ولم يسجّل شيئاً
+        if is_today
+            && absent == 1
+            && status == "absent"
+            && no_leave == 1
+            && manual == 0
+            && first_in.is_empty()
+            && !overnight
+            && now_min >= end_min + 180
+        {
+            let title = format!("غياب: {name}");
+            let body = format!(
+                "{name} غاب اليوم {today} حتى نهاية ورديته {we} وثلاث ساعات بعدها"
+            );
+            if insert_notification(conn, "absent_eod", Some(id), &title, &body, today) {
+                out.push(ShiftAlert {
+                    kind: "absent_eod".into(),
+                    employee_id: id,
+                    name: name.clone(),
+                    chat: dm_chat.clone(),
+                    title,
+                    body,
+                    dm: format!(
+                        "❌ {name}\nمرّت نهاية دوامك ({we}) وثلاث ساعات ولم يُسجَّ حضورك اليوم ({today}).\nإن كان لديك عذر أرسله: /سبب <السبب>"
+                    ),
+                    fresh_line: format!("{name} — غياب {today}"),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// سجل التنبيهات (الأحدث أولاً) — يعود لزر الجرس في الشريط الجانبي.
 #[tauri::command]
 pub fn list_notifications(
@@ -3534,7 +3756,7 @@ pub fn dashboard_charts(state: tauri::State<'_, AppState>) -> Result<Value, Stri
 // ---------------------------------------------------------------- الإجازات
 
 /// عدد أيام المدى [من، إلى] (بما فيه اليومان).
-fn range_days(from_date: &str, to_date: &str) -> i64 {
+pub(crate) fn range_days(from_date: &str, to_date: &str) -> i64 {
     match (
         NaiveDate::parse_from_str(from_date, "%Y-%m-%d"),
         NaiveDate::parse_from_str(to_date, "%Y-%m-%d"),
@@ -3546,20 +3768,18 @@ fn range_days(from_date: &str, to_date: &str) -> i64 {
 
 /// تسجيل إجازة: النوع (annual/sick) + هل هي مدفوعة. الإجازة السنوية تُخصم من
 /// رصيد الموظف (يُرفض إن كان الرصيد غير كافٍ)، وتُعاد عند الحذف.
-#[tauri::command]
-pub fn add_leave(
-    state: tauri::State<'_, AppState>,
+pub(crate) fn add_leave_impl(
+    conn: &Connection,
     employee_id: i64,
-    from_date: String,
-    to_date: String,
-    leave_type: String,
+    from_date: &str,
+    to_date: &str,
+    leave_type: &str,
     paid: bool,
-    note: String,
+    note: &str,
 ) -> Result<i64, String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let days = range_days(&from_date, &to_date);
+    let days = range_days(from_date, to_date);
     if days <= 0 {
-        return Err("تاريخ الانتهاء يجب أن يكون بعد تاريخ البداية".into());
+        return Err("تاريخ الانتهاء يجب أن يكون بعد تاريخ البداية أو مساوياً له".into());
     }
     // الإجازة السنوية المدفوعة تُخصم من الرصيد — غير المدفوعة لا تخصم شيئاً
     if leave_type == "annual" && paid {
@@ -3591,6 +3811,29 @@ pub fn add_leave(
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
+}
+
+#[tauri::command]
+pub fn add_leave(
+    state: tauri::State<'_, AppState>,
+    employee_id: i64,
+    from_date: String,
+    to_date: String,
+    leave_type: String,
+    paid: bool,
+    note: String,
+) -> Result<i64, String> {
+    let id = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        add_leave_impl(&conn, employee_id, &from_date, &to_date, &leave_type, paid, &note)?
+    };
+    if let (Ok(a), Ok(b)) = (
+        NaiveDate::parse_from_str(&from_date, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(&to_date, "%Y-%m-%d"),
+    ) {
+        let _ = recompute_range(&state, &a, &b);
+    }
+    Ok(id)
 }
 
 /// حذف إجازة: تُستعاد أيامها إلى رصيد الإجازات السنوية إن كانت سنوية، ثم
@@ -4271,7 +4514,7 @@ pub fn read_logo_data_uri(path: String) -> Result<String, String> {
 }
 
 // ترميز base64 بسيط (بدون depend إضافية)
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for c in data.chunks(3) {
@@ -6099,5 +6342,80 @@ mod tests {
         assert!(updated2.active); // بقي قسط 2026-12
         assert_eq!(updated2.deducted_amount, 100.0);
         assert_eq!(updated2.remaining_amount, 200.0);
+    }
+
+    // ------------------------------------- تنبيهات الشفت: غياب +15د وخروج مفقود +3س
+
+    /// قاعدة تنبيهات الشفت: وردية 06:00 ← 16:30 (مسنَدة لموظف «خليل» 81)
+    /// وصف غياب في DAY — تُمرَّر DAY كـ«today» مباشرة فالدالة لا تعتمد على
+    /// ساعة النظام.
+    fn alerts_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::init_db(&conn).unwrap();
+        db::seed_defaults(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO shifts(name,work_start,work_end,daily_hours,break_min,is_default,active)
+             VALUES('صباحية','06:00','16:30',8.5,30,0,1)",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO employees(id,pin,name,shift_id,active,bot_allowed,telegram_chat_id,created_at,updated_at)
+             VALUES(81,'81','خليل',?1,1,1,'1234','x','x')",
+            [sid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attendance_days(employee_id,date,absent,status,manual)
+             VALUES(81,?1,1,'absent',0)",
+            [DAY],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// تنبيه البداية: لا شيء قبل الربع ساعة، ثم «غياب» عند بداية الشفت + 15
+    /// دقيقة، ويمنع تكراره ليومه (النافذة اللاحقة لا تعيده).
+    #[test]
+    fn shift_start_alert_fires_at_quarter_hour_and_dedups() {
+        let conn = alerts_conn();
+        let early = shift_alerts_due(&conn, DAY, 6 * 60 + 14, true, true);
+        assert!(early.is_empty(), "قبل ربع ساعة لا تنبيه: {early:?}");
+
+        let due = shift_alerts_due(&conn, DAY, 6 * 60 + 15, true, true);
+        assert_eq!(due.len(), 1, "البداية + 15 دقيقة → تنبيه واحد");
+        assert_eq!(due[0].kind, "absent");
+        assert!(due[0].dm.contains("خليل"), "رسالة الموظف باسمه: {}", due[0].dm);
+
+        let again = shift_alerts_due(&conn, DAY, 7 * 60, true, true);
+        assert!(again.is_empty(), "التكرار ليومه ممنوع");
+    }
+
+    /// نهاية الشفت: دخول بلا خروج بعد نهاية الوردية بثلاث ساعات ← «خروج
+    /// مفقود»؛ وإطفاء وقفة النهاية يمنعه، ثم إشعافها يسمح به مرة واحدة.
+    #[test]
+    fn shift_end_alert_fires_three_hours_after_shift_end() {
+        let conn = alerts_conn();
+        conn.execute(
+            "UPDATE attendance_days SET absent=0, status='present',
+             first_in=?2, last_out=NULL WHERE employee_id=81 AND date=?1",
+            [DAY, "2026-10-19T06:05:00"],
+        )
+        .unwrap();
+
+        let before = shift_alerts_due(&conn, DAY, 16 * 60 + 30 + 179, true, true);
+        assert!(before.is_empty(), "قبل الثلاث ساعات لا تنبيه: {before:?}");
+
+        let off = shift_alerts_due(&conn, DAY, 16 * 60 + 30 + 180, true, false);
+        assert!(off.is_empty(), "وقفة النهاية مطفأة ← لا تنبيه");
+
+        let due = shift_alerts_due(&conn, DAY, 16 * 60 + 30 + 180, true, true);
+        assert_eq!(due.len(), 1, "النهاية + 3 ساعات → تنبيه واحد");
+        assert_eq!(due[0].kind, "no_checkout");
+        assert!(due[0].dm.contains("16:30"), "الرسالة تذكر نهاية الوردية: {}", due[0].dm);
+
+        let again = shift_alerts_due(&conn, DAY, 18 * 60, true, true);
+        assert!(again.is_empty(), "التكرار ليومه ممنوع");
     }
 }
