@@ -124,11 +124,19 @@ fn phones_match(a: &str, b: &str) -> bool {
     ta.len() >= 7 && ta == tb
 }
 
+/// فاصل مُوحَّد لعناوين وأقسام رسائل البوت — يعطي كشف بصرية مرتبة.
+const SEP: &str = "━━━━━━━━━━━━━━━━━━";
+const DOT: &str = "•";
+
+/// رد الخيار المُعطَّل من إعدادات البوت — يشرح أنه إداري وليس عطلاً.
+const PERM_DENIED: &str =
+    "🚫 هذا الخيار معطّل من الإدارة\n\n📞 إن كنت بحاجته راجع الإدارة لتفعيله من إعدادات البوت.";
+
 const BOT_BLOCKED: &str =
-    "🚫 تم منع هذا الحساب من استخدام البوت.\nراجع الإدارة لإعادة السماح.";
+    "🚫 تم منع هذا الحساب من استخدام البوت.\n\n📞 راجع الإدارة لإعادة السماح.";
 
 const SUSPENDED: &str =
-    "🚫 حسابك موقوف لدى الإدارة، ولا يمكن استخدام البوت حتى يُعاد تفعيله.\nراجع الإدارة.";
+    "🚫 حسابك موقوف لدى الإدارة، ولا يمكن استخدام البوت حتى يُعاد تفعيله.\n\n📞 راجع الإدارة.";
 
 /// يطبّع الوقت HH:MM إلى دقائق.
 fn hm_minutes(v: &str) -> i64 {
@@ -652,7 +660,7 @@ pub fn telegram_add_supervisor(
         let _ = send(
             &token,
             &chat_id,
-            "✅ أُضيفت لك صلاحيات المشرف أيضاً — رقمك مسجّل كموظف ومشرف.\n\nأصبحت أزرارك تشمل «📊 ملخص اليوم»، وأمر /ملخص يعمل الآن.",
+            "✅ أُضيفت لك صلاحيات المشرف أيضاً 🎉\n\n👤 رقمك مسجّل كموظف ومشرف معاً.\n\n📊 أصبحت أزرارك تشمل «ملخص اليوم»، وأمر /ملخص يعمل الآن.",
             Some(keyboard),
         );
     }
@@ -931,12 +939,12 @@ pub fn decide_leave_request(
         };
         let tg_msg = if approve {
             format!(
-                "✅ تمت الموافقة على طلب إجازتك\n• النوع: {type_lbl} ({})\n• الفترة: {from_date} ← {to_date} ({days_count} يوم){bal_line}{note_line}\n\n💡 ملاحظة: في حال ختمت بصمة دخول في يوم الإجازة، تُلغى الإجازة عن ذلك اليوم تلقائياً ويُعاد اليوم لرصيدك إن كانت سنوية مدفوعة.",
+                "✅ تمت الموافقة على طلب إجازتك 🎉\n{SEP}\n{DOT} النوع: {type_lbl} ({})\n{DOT} الفترة: {from_date} ← {to_date} ({days_count} يوم){bal_line}{note_line}\n{SEP}\n💡 إن ختمت بصمة دخول في يوم الإجازة تُلغى الإجازة عن ذلك اليوم تلقائياً (واليوم السنوي المدفوع يُعاد لرصيدك).",
                 if final_paid { "مدفوعة" } else { "بدون راتب" }
             )
         } else {
             format!(
-                "❌ تم رفض طلب إجازتك ({type_lbl})\n• الفترة: {from_date} ← {to_date} ({days_count} يوم){note_line}"
+                "❌ تم رفض طلب إجازتك\n{SEP}\n{DOT} النوع: {type_lbl}\n{DOT} الفترة: {from_date} ← {to_date} ({days_count} يوم){note_line}"
             )
         };
         if let Some(c) = chat_opt.as_deref().filter(|c| !c.trim().is_empty()) {
@@ -1075,10 +1083,10 @@ pub fn decide_advance_request(
             let note_line = if admin_note.is_empty() {
                 String::new()
             } else {
-                format!("\n• ملاحظة الإدارة: {admin_note}")
+                format!("\n{DOT} ملاحظة الإدارة: {admin_note}")
             };
             format!(
-                "✅ تمت الموافقة على طلب السلفة\n• المبلغ المعتمد: {final_amt:.2} {cur}\n• طريقة الخصم: {plan}{note_line}"
+                "✅ تمت الموافقة على طلب السلفة 🎉\n{SEP}\n💵 المبلغ المعتمد: {final_amt:.2} {cur}\n📅 طريقة الخصم: {plan}{note_line}"
             )
         } else {
             conn.execute(
@@ -1089,9 +1097,11 @@ pub fn decide_advance_request(
             let note_line = if admin_note.is_empty() {
                 String::new()
             } else {
-                format!("\n• السبب/الملاحظة: {admin_note}")
+                format!("\n{DOT} السبب/الملاحظة: {admin_note}")
             };
-            format!("❌ تم رفض طلب السلفة بمبلغ {req_amt:.2} {cur}.{note_line}")
+            format!(
+                "❌ تم رفض طلب السلفة\n{SEP}\n💵 المبلغ المطلوب: {req_amt:.2} {cur}{note_line}"
+            )
         };
 
         let token = if enabled(&st, "tg_enabled", false) {
@@ -1451,26 +1461,26 @@ fn finalize_leave_request(
 
     let lbl = leave_type_label(leave_type);
     let att_line = if attachment_data.is_some() {
-        "\n• المرفق: تم إرفاق الصورة 📎"
+        "\n📎 المرفق: صورة التقرير ✅"
     } else {
         ""
     };
     let note_line = if note.trim().is_empty() {
         String::new()
     } else {
-        format!("\n• الملاحظة: {}", note.trim())
+        format!("\n{DOT} الملاحظة: {}", note.trim())
     };
     let reply = format!(
-        "✅ تم إرسال طلب الإجازة إلى الإدارة:\n• النوع: {lbl}\n• الفترة: {from_date} ← {to_date} ({days} يوم){att_line}{note_line}\n\nسيصلك إشعار على البوت فور القبول أو الرفض."
+        "✅ أُرسل طلب الإجازة للإدارة\n{SEP}\n{DOT} النوع: {lbl}\n{DOT} الفترة: {from_date} ← {to_date} ({days} يوم){att_line}{note_line}\n{SEP}\n🔔 سيصلك إشعار فور القبول أو الرفض."
     );
-    let alert_title = format!("🏖️ طلب إجازة جديد — {emp_name}");
+    let alert_title = format!("🏖️ طلب إجازة جديدة — {emp_name}");
     let alert_body = format!(
-        "{lbl} من {from_date} إلى {to_date} ({days} يوم){}{}",
-        if attachment_data.is_some() { " [مع مرفق]" } else { "" },
+        "{DOT} النوع: {lbl}\n{DOT} المدة: {days} يوم\n{DOT} الفترة: من {from_date} إلى {to_date}{}{}",
+        if attachment_data.is_some() { "\n📎 المرفق: صورة" } else { "" },
         if note.trim().is_empty() {
             String::new()
         } else {
-            format!(" — {}", note.trim())
+            format!("\n{DOT} الملاحظة: {}", note.trim())
         }
     );
     Ok((reply, alert_title, alert_body))
@@ -1499,18 +1509,18 @@ fn finalize_advance_request(
     let note_line = if note.trim().is_empty() {
         String::new()
     } else {
-        format!("\n• الملاحظة: {}", note.trim())
+        format!("\n{DOT} الملاحظة: {}", note.trim())
     };
     let reply = format!(
-        "✅ تم إرسال طلب السلفة إلى الإدارة:\n• المبلغ المطلوب: {amount:.2} {cur}{note_line}\n\nسيصلك إشعار على البوت فور القبول أو الرفض."
+        "✅ أُرسل طلب السلفة للإدارة\n{SEP}\n💵 المبلغ المطلوب: {amount:.2} {cur}{note_line}\n{SEP}\n🔔 سيصلك إشعار فور القبول أو الرفض."
     );
-    let alert_title = format!("💵 طلب سلفة جديد — {emp_name}");
+    let alert_title = format!("💵 طلب سلفة جديدة — {emp_name}");
     let alert_body = format!(
-        "المبلغ: {amount:.2} {cur}{}",
+        "{DOT} المبلغ: {amount:.2} {cur}{}",
         if note.trim().is_empty() {
             String::new()
         } else {
-            format!(" — {}", note.trim())
+            format!("\n{DOT} الملاحظة: {}", note.trim())
         }
     );
     Ok((reply, alert_title, alert_body))
@@ -1561,12 +1571,14 @@ fn leave_balance_text(conn: &Connection, emp_id: i64) -> String {
         )
         .unwrap_or(0);
 
-    let mut out = format!(
-        "🏖️ رصيد الإجازات — {}\n\n• الرصيد السنوي المتاح: {balance:.1} يوم\n• الاستحقاق السنوي: {annual_days:.1} يوم / سنة\n• إجازات سنوية مستخدمة: {used_annual} يوم\n• إجازات مرضية مسجّلة: {used_sick} يوم\n• إجازات بدون راتب: {used_unpaid} يوم",
-        name.trim()
-    );
+    let mut out = format!("🏖️ رصيد الإجازات — {}\n{SEP}\n", name.trim());
+    out.push_str(&format!("🟢 الرصيد السنوي المتاح: {balance:.1} يوم\n"));
+    out.push_str(&format!("📅 الاستحقاق السنوي: {annual_days:.1} يوم / سنة\n"));
+    out.push_str(&format!("🟡 إجازات سنوية مستخدمة: {used_annual} يوم\n"));
+    out.push_str(&format!("🏥 إجازات مرضية مسجّلة: {used_sick} يوم\n"));
+    out.push_str(&format!("📄 إجازات بدون راتب: {used_unpaid} يوم"));
     if pending_cnt > 0 {
-        out.push_str(&format!("\n• طلبات قيد المراجعة: {pending_cnt}"));
+        out.push_str(&format!("\n⏳ طلبات قيد المراجعة: {pending_cnt}"));
     }
     out
 }
@@ -1791,7 +1803,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
 
         if data == "flow:cancel" {
             clear_flow(&conn, &chat);
-            reply = Some("✖️ تم إلغاء الطلب.".into());
+            reply = Some("✖️ تم إلغاء الطلب.\nنُزِلت أزرار القائمة الرئيسية ⬇️".into());
             keyboard = Some(employee_menu(&s, is_sup));
         } else if data.starts_with("lv:") && !enabled(&s, "tg_allow_leave", true) {
             // طلبات الإجازات مُعطّلة من قسم «ما المسموح للموظف؟»
@@ -1815,7 +1827,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                     &json!({ "kind": "leave", "leave_type": ty, "step": "duration" }),
                 );
                 reply = Some(format!(
-                    "📌 النوع المختار: {}\n\nحدد مدة الإجازة:",
+                    "📌 النوع المختار: {}\n{SEP}\n📅 حدد مدة الإجازة:",
                     leave_type_label(ty)
                 ));
                 keyboard = Some(leave_duration_keyboard(&today, &tomorrow));
@@ -1824,18 +1836,18 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
             if let Some(mut fl) = get_flow(&conn, &chat) {
                 fl["step"] = json!("single_date");
                 set_flow(&conn, &chat, &fl);
-                reply = Some(
-                    "📅 اختر تاريخ يوم الإجازة من الأزرار أدناه، أو اكتب التاريخ بصيغة YYYY-MM-DD (مثال: 2026-11-05):".into(),
-                );
+                reply = Some(format!(
+                    "📅 يوم واحد — اختر التاريخ\n{SEP}\n🗓️ اختر تاريخ يوم الإجازة من الأزرار أدناه، أو اكتبه بصيغة YYYY-MM-DD (مثال: 2026-11-05):"
+                ));
                 keyboard = Some(upcoming_dates_keyboard(&today, "lv:one"));
             }
         } else if data == "lv:mode:range" {
             if let Some(mut fl) = get_flow(&conn, &chat) {
                 fl["step"] = json!("range_from");
                 set_flow(&conn, &chat, &fl);
-                reply = Some(
-                    "🗓️ اختر تاريخ بداية الإجازة (من) من الأزرار، أو اكتبه بصيغة YYYY-MM-DD:".into(),
-                );
+                reply = Some(format!(
+                    "🗓️ إجازة من تاريخ إلى تاريخ\n{SEP}\n1️⃣ اختر تاريخ البداية (من) من الأزرار، أو اكتبه بصيغة YYYY-MM-DD:"
+                ));
                 keyboard = Some(upcoming_dates_keyboard(&today, "lv:from"));
             }
         } else if let Some(d) = data.strip_prefix("lv:from:") {
@@ -1844,7 +1856,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                 fl["from_date"] = json!(d);
                 set_flow(&conn, &chat, &fl);
                 reply = Some(format!(
-                    "🗓️ بداية الإجازة: {d}\n\nاختر مدة/نهاية الإجازة من الأزرار، أو اكتب تاريخ النهاية بصيغة YYYY-MM-DD:"
+                    "🗓️ بداية الإجازة: {d} ✅\n{SEP}\n2️⃣ اختر نهاية الإجازة من الأزرار، أو اكتب تاريخ النهاية بصيغة YYYY-MM-DD:"
                 ));
                 keyboard = Some(range_end_keyboard(d));
             }
@@ -1870,7 +1882,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                     set_flow(&conn, &chat, &fl);
                     if ty == "sick" {
                         reply = Some(format!(
-                            "🏥 طلب إجازة مرضية\nمن {from_date} إلى {to_date} ({days} يوم)\n\n📸 أرسل الآن صورة التقرير الطبي (أو اكتب ملاحظة)، أو اضغط الزر أدناه لإرسال الطلب بدون صورة:"
+                            "🏥 طلب إجازة مرضية\n{SEP}\n📅 الفترة: من {from_date} إلى {to_date} ({days} يوم)\n\n📸 أرسل الآن صورة التقرير الطبي (أو اكتب ملاحظة)، أو اضغط الزر أدناه لإرسال الطلب بدون صورة:"
                         ));
                         keyboard = Some(json!({
                             "inline_keyboard": [
@@ -1880,7 +1892,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                         }));
                     } else {
                         reply = Some(format!(
-                            "📝 طلب {}\nمن {from_date} إلى {to_date} ({days} يوم)\n\n✍️ اكتب سبب/ملاحظة الإجازة الآن، أو اضغط «✅ إرسال الطلب الآن»:",
+                            "📝 طلب {}\n{SEP}\n📅 الفترة: من {from_date} إلى {to_date} ({days} يوم)\n\n✍️ اكتب سبب/ملاحظة الإجازة الآن، أو اضغط «إرسال الطلب الآن»:",
                             leave_type_label(&ty)
                         ));
                         keyboard = Some(json!({
@@ -1919,7 +1931,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                 );
                 let cur = currency(&s);
                 reply = Some(format!(
-                    "💵 مبلغ السلفة المطلوب: {amt:.2} {cur}\n\n✍️ اكتب ملاحظة أو سبب طلب السلفة، أو اضغط «✅ إرسال الطلب الآن»:"
+                    "💵 مبلغ السلفة ✅\n{SEP}\n{DOT} المبلغ: {amt:.2} {cur}\n\n2️⃣ اكتب ملاحظة أو سبب طلب السلفة، أو اضغط «إرسال الطلب الآن»:"
                 ));
                 keyboard = Some(json!({
                     "inline_keyboard": [
@@ -1959,7 +1971,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
             if !enabled(&s, "tg_allow_reason", true) {
                 reply = Some(PERM_DENIED.into());
             } else if key == "write" {
-                reply = Some("✍️ اكتب السبب بعد الأمر، مثال:\n/سبب ظرف عائلي".into());
+                reply = Some("✍️ اكتب السبب\n\nمثال: /سبب ظرف عائلي".into());
             } else if let Some(reason) = reason_from_key(key) {
                 let day = today_in(&s);
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -1972,7 +1984,7 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
                 ) {
                     Ok(_) => {
                         reply = Some(format!(
-                            "✅ سُجّل سبب غياب اليوم ({day}):\n{reason}\n\nوصل التنبيه للإدارة."
+                            "✍️ سبب غياب اليوم ({day})\n{SEP}\n{reason}\n{SEP}\n✅ وصل التنبيه للإدارة."
                         ));
                         absence_alert = Some(format!("{name} — {day}\n{reason}"));
                     }
@@ -1983,8 +1995,10 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
             }
         }
     } else if sup.is_some() {
-        reply = Some("هذه الأزرار خاصة بالموظفين. استخدم الأزرار أدناه.".into());
-        keyboard = Some(supervisor_menu());
+                reply = Some(
+                    "👥 هذه الأزرار خاصة بالموظفين.\n\n👨‍💼 استخدم أزرار المشرف أدناه ⬇️".into(),
+                );
+                keyboard = Some(supervisor_menu());
     }
 
     if let Some(m) = &reply {
@@ -2119,13 +2133,13 @@ fn link_contact(app: &tauri::AppHandle, token: &str, chat: &str, phone: &str) {
                 supervisor_menu()
             };
             let extra = if dual {
-                "\n\nتصلك تنبيهات الموظفين كمشرف أيضاً."
+                "\n\n👨‍💼 تصلك تنبيهات الموظفين كمشرف أيضاً."
             } else {
                 ""
             };
             Some((
                 format!(
-                    "{title}\n{}\n\nاختر من الأزرار أدناه، أو أرسل /مساعدة.{extra}",
+                    "{title}\n{SEP}\n{}\n\nاختر من الأزرار أدناه ⬇️ أو أرسل /مساعدة.{extra}",
                     lines.join("\n")
                 ),
                 Some(menu),
@@ -2279,25 +2293,25 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
         if let Some((_, name, _)) = &emp {
             let dual = sup.is_some();
             reply = Some(format!(
-                "👋 أهلاً {name}{}\n\nاختر ما تريد من الأزرار أدناه.",
+                "👋 أهلاً {name}{}\n{SEP}\n🤖 اختر ما تريد من الأزرار أدناه ⬇️\n📚 الأوامر: /مساعدة",
                 if dual { " (موظف ومشرف)" } else { "" }
             ));
             keyboard = Some(employee_menu(&s, dual));
         } else if let Some((name, _)) = &sup {
-            reply = Some(format!("👋 أهلاً {name}\n\nاختر من الأزرار أدناه."));
+            reply = Some(format!(
+                "👋 أهلاً {name}\n{SEP}\n🤖 اختر ما تريد من الأزرار أدناه ⬇️\n📚 الأوامر: /مساعدة"
+            ));
             keyboard = Some(supervisor_menu());
         } else {
-            reply = Some(
-                "👋 أهلاً بك في بوت الحضور.\n\nلربط حسابك اضغط الزر أدناه لمشاركة رقم هاتفك المسجّل لدى الشركة."
-                    .into(),
-            );
+            reply = Some(format!(
+                "👋 أهلاً بك في بوت نظام الحضور\n{SEP}\n🔗 لربط حسابك اضغط الزر أدناه لمشاركة رقمك المسجّل لدى الإدارة."
+            ));
             keyboard = Some(contact_keyboard());
         }
     } else if emp.is_none() && sup.is_none() {
-        reply = Some(
-            "🔗 حسابك غير مرتبط بعد.\nاضغط «📱 مشاركة رقم هاتفي» لربطه برقمك المسجّل لدى الإدارة."
-                .into(),
-        );
+        reply = Some(format!(
+            "🔗 حسابك غير مرتبط بعد\n{SEP}\n📱 اضغط «مشاركة رقم هاتفي» لربطه برقمك المسجّل لدى الإدارة.\n\nلإعادة المحاولة أرسل /start."
+        ));
         keyboard = Some(contact_keyboard());
     } else if cmd == "الغاء" || cmd == "إلغاء" || lower == "unlink" {
         // إلغاء الربط
@@ -2309,7 +2323,9 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
             "UPDATE telegram_supervisors SET chat_id=NULL, linked_at=NULL WHERE chat_id=?1",
             params![chat],
         );
-        reply = Some("تم إلغاء ربط هذه المحادثة. لإعادة الربط أرسل /start.".into());
+        reply = Some(format!(
+            "✅ تم إلغاء ربط المحادثة\n{SEP}\nنُزِلت أزرار البوت من هذه المحادثة.\nلإعادة الربط أرسل /start."
+        ));
         keyboard = Some(remove_keyboard());
     } else if let Some((emp_id, name, _)) = emp {
         let period_now = today_in(&s)[..7].to_string();
@@ -2333,7 +2349,7 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                     fl["from_date"] = json!(d_trim);
                     set_flow(&conn, chat, &fl);
                     reply = Some(format!(
-                        "🗓️ بداية الإجازة: {d_trim}\n\nاختر تاريخ نهاية الإجازة من الأزرار، أو اكتبه بالصيغة YYYY-MM-DD:"
+                    "🗓️ بداية الإجازة: {d_trim} ✅\n{SEP}\n2️⃣ اختر تاريخ نهاية الإجازة من الأزرار، أو اكتبه بصيغة YYYY-MM-DD:"
                     ));
                     keyboard = Some(range_end_keyboard(d_trim));
                 } else {
@@ -2355,7 +2371,7 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                         set_flow(&conn, chat, &fl);
                         if ty == "sick" {
                             reply = Some(format!(
-                                "🏥 طلب إجازة مرضية\nمن {from_date} إلى {to_date} ({days} يوم)\n\n📸 أرسل الآن صورة التقرير الطبي (أو اكتب ملاحظة)، أو اضغط الزر أدناه لإرسال الطلب بدون صورة:"
+                                "🏥 طلب إجازة مرضية\n{SEP}\n📅 الفترة: من {from_date} إلى {to_date} ({days} يوم)\n\n📸 أرسل الآن صورة التقرير الطبي (أو اكتب ملاحظة)، أو اضغط الزر أدناه لإرسال الطلب بدون صورة:"
                             ));
                             keyboard = Some(json!({
                                 "inline_keyboard": [
@@ -2365,7 +2381,7 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                             }));
                         } else {
                             reply = Some(format!(
-                                "📝 طلب {}\nمن {from_date} إلى {to_date} ({days} يوم)\n\n✍️ اكتب سبب/ملاحظة الإجازة الآن، أو اضغط «✅ إرسال الطلب الآن»:",
+                                "📝 طلب {}\n{SEP}\n📅 الفترة: من {from_date} إلى {to_date} ({days} يوم)\n\n✍️ اكتب سبب/ملاحظة الإجازة الآن، أو اضغط «إرسال الطلب الآن»:",
                                 leave_type_label(&ty)
                             ));
                             keyboard = Some(json!({
@@ -2432,7 +2448,9 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                         reply = Some("⚠️ أدخل مبلغاً أكبر من صفر.".into());
                     }
                 } else {
-                    reply = Some("⚠️ أدخل مبلغ السلفة بالأرقام (مثال: 500) أو اختر من الأزرار.".into());
+                        reply = Some(format!(
+                            "⚠️ المبلغ غير صالح.\n\nأدخل مبلغ السلفة بالأرقام (مثال: 500) أو اختر من الأزرار."
+                        ));
                 }
             } else if kind == "advance" && step == "note" {
                 let amt = fl["amount"].as_f64().unwrap_or(0.0);
@@ -2453,14 +2471,18 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
             if !enabled(&s, "tg_allow_month", true) {
                 reply = Some(PERM_DENIED.into());
             } else {
-                reply = Some("🗓️ اختر الشهر الذي تريد كشفه:".into());
+                reply = Some(format!(
+                    "🗓️ كشف شهر آخر\n{SEP}\nاختر الشهر الذي تريد كشفه:"
+                ));
                 keyboard = Some(months_keyboard(&s));
             }
         } else if cmd == "أسباب" {
             if !enabled(&s, "tg_allow_reason", true) {
                 reply = Some(PERM_DENIED.into());
             } else {
-                reply = Some("✍️ اختر سبب الغياب من الأزرار، أو اكتبه بعد /سبب:".into());
+                reply = Some(format!(
+                    "✍️ سبب الغياب\n{SEP}\nاختر سبب اليوم من الأزرار، أو اكتبه بعد /سبب:"
+                ));
                 keyboard = Some(reasons_keyboard());
             }
         } else {
@@ -2510,7 +2532,9 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                     reply = Some(PERM_DENIED.into());
                 } else {
                     clear_flow(&conn, chat);
-                    reply = Some("📝 طلب إجازة جديدة\n\nاختر نوع الإجازة من الأزرار أدناه:".into());
+                    reply = Some(format!(
+                        "📝 طلب إجازة جديد\n{SEP}\n1️⃣ اختر نوع الإجازة من الأزرار أدناه:"
+                    ));
                     keyboard = Some(leave_types_keyboard());
                 }
             }
@@ -2524,9 +2548,9 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                         &json!({ "kind": "advance", "step": "amount" }),
                     );
                     let cur = currency(&s);
-                    reply = Some(
-                        "💵 طلب سلفة مالية\n\nاختر المبلغ المطلوب من الأزرار أدناه، أو اكتب المبلغ بالأرقام:".into(),
-                    );
+                    reply = Some(format!(
+                        "💵 طلب سلفة مالية\n{SEP}\n1️⃣ اختر المبلغ المطلوب من الأزرار أدناه، أو اكتب المبلغ بالأرقام:"
+                    ));
                     keyboard = Some(advance_amounts_keyboard(&cur));
                 }
             }
@@ -2534,7 +2558,7 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                 if !enabled(&s, "tg_allow_reason", true) {
                     reply = Some(PERM_DENIED.into());
                 } else if arg.is_empty() {
-                    reply = Some("✍️ أرسل السبب بعد الأمر، مثال:\n/سبب ظرف عائلي".into());
+                    reply = Some("✍️ اكتب السبب\n\nمثال: /سبب ظرف عائلي".into());
                 } else {
                     let day = today_in(&s);
                     let reason = arg.chars().take(300).collect::<String>();
@@ -2548,7 +2572,7 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
                     ) {
                         Ok(_) => {
                             reply = Some(format!(
-                                "✅ سُجّل سبب غياب اليوم ({day}):\n{reason}\n\nوصل التنبيه للإدارة."
+                                "✍️ سبب غياب اليوم ({day})\n{SEP}\n{reason}\n{SEP}\n✅ وصل التنبيه للإدارة."
                             ));
                             absence_alert = Some(format!("{name} — {day}\n{reason}"));
                         }
@@ -2600,12 +2624,13 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
     }
 }
 
-const PERM_DENIED: &str = "🚫 هذا الخيار غير مسموح من الإدارة.";
-const HELP_HEADER: &str = "🤖 أوامر بوت الحضور";
-const SUP_HELP: &str = "👨‍💼 أوامر المشرف:\n/ملخص — ملخص حضور اليوم\n/مساعدة — هذه القائمة\n/الغاء — إلغاء ربط المحادثة\n\nأو استخدم الأزرار الجاهزة أسفل المحادثة.";
+const HELP_HEADER: &str = "🤖 دليل أوامر بوت الحضور";
+const SUP_HELP: &str = "👨‍💼 أوامر المشرف\n▾▾▾▾▾▾▾▾▾▾▾▾▾▾▾\n/ملخص — ملخص حضور اليوم\n/مساعدة — هذه القائمة\n/الغاء — إلغاء ربط المحادثة\n\nأو استخدم الأزرار الجاهزة أسفل المحادثة.";
 
 fn employee_help(s: &HashMap<String, String>) -> String {
-    let mut out = String::from("يمكنك الضغط على الأزرار الجاهزة بدل كتابة الأوامر.\n\n");
+    let mut out = format!(
+        "{SEP}\n💡 يمكنك الضغط على الأزرار الجاهزة بدل كتابة الأوامر.\n{SEP}\n"
+    );
 
     if enabled(s, "tg_allow_today", true) {
         out.push_str("/اليوم — هل ختمت دخولك/خروجك اليوم؟\n");
@@ -2732,32 +2757,32 @@ fn today_text(conn: &Connection, emp_id: i64, s: &HashMap<String, String>) -> St
     match days.iter().find(|d| d.employee_id == emp_id && d.date == today) {
         Some(d) => {
             if d.status == "weekend" {
-                format!("🌴 اليوم {today} عطلة أسبوعية — لا يلزم الختم.")
+                format!("🌴 دوام اليوم — {today}\n{SEP}\nاليوم عطلة أسبوعية 🌿 لا يلزم الختم.")
             } else if d.status == "holiday" {
-                format!("🎉 اليوم {today} عطلة رسمية — لا يلزم الختم.")
+                format!("🎉 دوام اليوم — {today}\n{SEP}\nاليوم عطلة رسمية 🎊 لا يلزم الختم.")
             } else if d.status == "leave" {
-                format!("🗓️ اليوم {today} إجازة مسجّلة لك.")
+                format!("🗓️ دوام اليوم — {today}\n{SEP}\n🏖️ إجازة مسجّلة لك اليوم.")
             } else if let Some(fin) = &d.first_in {
                 match &d.last_out {
                     Some(out) => format!(
-                        "📅 اليوم {today}\n✅ دخول: {}\n✅ خروج: {}\n⏱️ الساعات: {:.1}",
+                        "📅 دوام اليوم — {today}\n{SEP}\n✅ دخول: {}\n✅ خروج: {}\n⏱️ الساعات: {:.1}",
                         hhmm(Some(fin)),
                         hhmm(Some(out)),
                         d.worked_min as f64 / 60.0
                     ),
                     None => format!(
-                        "📅 اليوم {today}\n✅ دخول: {}\n⏳ لم تسجّل انصرافك بعد — لا تنسَ الختم عند المغادرة.",
+                        "📅 دوام اليوم — {today}\n{SEP}\n✅ دخول: {}\n⏳ لم تسجّل انصرافك بعد — لا تنسَ الختم عند المغادرة.",
                         hhmm(Some(fin))
                     ),
                 }
             } else {
                 format!(
-                    "📅 اليوم {today}\n❌ لم يُسجَّل حضورك.\nإن كان لديك عذر أرسله: /سبب <السبب>",
+                    "📅 دوام اليوم — {today}\n{SEP}\n❌ لا يوجد تسجيل حضور لك اليوم.\n✍️ إن كان لديك عذر أرسله: /سبب <السبب>"
                 )
             }
         }
         None => format!(
-            "📅 اليوم {today}\n❌ لا يوجد تسجيل حضور لك اليوم.\nإن كان لديك عذر أرسله: /سبب <السبب>",
+            "📅 دوام اليوم — {today}\n{SEP}\n❌ لا يوجد تسجيل حضور لك اليوم.\n✍️ إن كان لديك عذر أرسله: /سبب <السبب>"
         ),
     }
 }
@@ -2779,7 +2804,7 @@ fn salary_text(
         .ok();
     let Some((period, net, paid_at)) = paid else {
         return Err(
-            "💤 لا يوجد راتب مدفوع لك حتى الآن.\nراجع الإدارة إن كنت تتوقع راتباً مدفوعاً."
+            "💤 لا يوجد راتب مدفوع لك حتى الآن.\n📞 راجع الإدارة إن كنت تتوقع راتباً مدفوعاً."
                 .into(),
         );
     };
@@ -2812,18 +2837,21 @@ fn salary_text(
         .ok();
 
     let mut out = format!(
-        "💰 {}\n\nالشهر: {} ({period})\nالصافي المدفوع: {:.2} {cur}\nتاريخ الدفع: {}",
-        name.trim(),
+        "💰 آخر راتب — {nm}\n{SEP}\n📅 الشهر: {} ({period})\n✅ الصافي المدفوع: {net:.2} {cur}\n🗓️ تاريخ الدفع: {}",
         month_label(&period),
-        net,
-        &paid_at[..paid_at.len().min(10)]
+        &paid_at[..paid_at.len().min(10)],
+        nm = name.trim()
     );
     if let Some((days, hours, ot, base, allow, weekend, adv)) = snap {
-        out.push_str(&format!(
-            "\n\n• أيام الحضور: {days}\n• الساعات: {hours:.1}\n• الإضافي: {ot:.1} ساعة\n• الأساسي: {base:.2} {cur}\n• البدلات: {allow:.2} {cur}\n• بدل العطلة: {weekend:.2} {cur}"
-        ));
+        out.push_str(&format!("\n{SEP}\n🧾 التفاصيل:"));
+        out.push_str(&format!("\n{DOT} أيام الحضور: {days}"));
+        out.push_str(&format!("\n{DOT} الساعات: {hours:.1}"));
+        out.push_str(&format!("\n{DOT} الإضافي: {ot:.1} ساعة"));
+        out.push_str(&format!("\n{DOT} الأساسي: {base:.2} {cur}"));
+        out.push_str(&format!("\n{DOT} البدلات: {allow:.2} {cur}"));
+        out.push_str(&format!("\n{DOT} بدل العطلة: {weekend:.2} {cur}"));
         if adv > 0.0 {
-            out.push_str(&format!("\n• خصم السلفة: − {adv:.2} {cur}"));
+            out.push_str(&format!("\n{DOT} خصم السلفة: − {adv:.2} {cur}"));
         }
     }
     Ok(out)
@@ -2854,19 +2882,19 @@ pub fn day_summary(conn: &Connection) -> Result<String, String> {
         }
     }
 
-    let mut out = format!("📊 ملخص الحضور — {today}\n\n");
-    out.push_str(&format!("✅ ختموا دخولاً وخروجاً ({}):\n", present.len()));
+    let mut out = format!("📊 ملخص الحضور — {today}\n{SEP}\n");
+    out.push_str(&format!("✅ ختموا دخولاً وخروجاً ({})\n", present.len()));
     if present.is_empty() {
         out.push_str("— لا أحد\n");
     }
-    for (n, i, o) in present.iter().take(40) {
+    for (n, i, o) in &present {
         out.push_str(&format!("• {n} ({i} ← {o})\n"));
     }
-    out.push_str(&format!("\n⏳ دخلوا ولم يسجّلوا خروجاً ({}):\n", missing_out.len()));
+    out.push_str(&format!("\n⏳ دخلوا ولم يسجّلوا خروجاً ({})\n", missing_out.len()));
     if missing_out.is_empty() {
         out.push_str("— لا أحد\n");
     }
-    for (n, i) in missing_out.iter().take(40) {
+    for (n, i) in &missing_out {
         out.push_str(&format!("• {n} (دخول {i})\n"));
     }
 
@@ -2904,13 +2932,13 @@ pub fn day_summary(conn: &Connection) -> Result<String, String> {
             }
         }
     }
-    out.push_str(&format!("\n❌ لم يسجّلوا حضوراً ({}):\n", absent.len()));
+    out.push_str(&format!("\n❌ لم يسجّلوا حضوراً ({})\n", absent.len()));
     if weekend.contains(&weekday_idx) || holiday {
-        out.push_str("— اليوم عطلة\n");
+        out.push_str("— اليوم عطلة 🌴\n");
     } else if absent.is_empty() {
-        out.push_str("— لا أحد\n");
+        out.push_str("— لا أحد 🎉\n");
     } else {
-        for n in absent.iter().take(40) {
+        for n in &absent {
             out.push_str(&format!("• {n}\n"));
         }
     }
@@ -3009,7 +3037,7 @@ pub(crate) fn eod_tick(app: &tauri::AppHandle) {
         day_summary(&conn).ok()
     };
     if let Some(sum) = summary {
-        notify_supervisors_async(app, "🌙 نهاية اليوم", &sum);
+        notify_supervisors_async(app, "🌙 ملخص نهاية اليوم", &sum);
     }
     if let Ok(conn) = state.db.lock() {
         let _ = db::set_setting(&conn, "tg_eod_sent", &today);
@@ -3236,7 +3264,7 @@ mod tests {
         )
         .unwrap();
         assert!(rep.contains("إجازة مرضية"));
-        assert!(rep.contains("تم إرفاق الصورة"));
+        assert!(rep.contains("المرفق: صورة التقرير"));
         assert!(title.contains("رامي"));
 
         // 3) طلب إجازة سنوية مدفوعة (يومان) ثم الموافقة عليها → يخصم يومين من الرصيد (10 -> 8)
