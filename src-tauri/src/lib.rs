@@ -166,30 +166,29 @@ fn notify_tick(app: &tauri::AppHandle) {
     // ملخص نهاية اليوم للمشرفين — بعد نهاية آخر شفت بـ 3 ساعات (بلا وقت ثابت)
     crate::telegram::eod_tick(app);
 
-    // 3) إشعارات سطح المكتب للتنبيهات الجديدة فقط
+    // 3) إشعارات سطح المكتب للتنبيهات الجديدة فقط — بالأسماء كاملة بلا اختصار:
+    //    تنبيه تلجرام يقسّم نفسه عند 3800 حرفاً، وإشعار سطح المكتب يستوعب القائمة.
     if !fresh.is_empty() {
         let lines: String = fresh
             .iter()
-            .take(8)
             .map(|x| format!("• {x}\n"))
             .collect();
-        let more = if fresh.len() > 8 {
-            format!("… و {} آخرين", fresh.len() - 8)
-        } else {
-            String::new()
-        };
-        let body = format!("{lines}{more}").trim_end().to_string();
         let _ = app
             .notification()
             .builder()
             .title("🔔 تنبيهات الحضور")
-            .body(&body)
+            .body(lines.trim_end())
             .show();
-        crate::telegram::notify_supervisors_async(app, "🔔 تنبيهات الحضور", &body);
+        crate::telegram::notify_supervisors_gated(
+            app,
+            "🔔 تنبيهات الحضور",
+            lines.trim_end(),
+            Some("tg_sup_alerts"),
+        );
     }
     if !lates.is_empty() {
         let mut body = String::new();
-        for (_, name, late, fin) in lates.iter().take(12) {
+        for (_, name, late, fin) in lates.iter() {
             let t = fin
                 .split('T')
                 .nth(1)
@@ -198,19 +197,17 @@ fn notify_tick(app: &tauri::AppHandle) {
                 .unwrap_or_else(|| "—".into());
             body.push_str(&format!("• {name} — تأخير {late} دقيقة (حضور {t})\n"));
         }
-        if lates.len() > 12 {
-            body.push_str(&format!("… و {} آخرين", lates.len() - 12));
-        }
         let _ = app
             .notification()
             .builder()
             .title(format!("⏰ تأخير عن الدوام — {today}"))
             .body(body.trim_end())
             .show();
-        crate::telegram::notify_supervisors_async(
+        crate::telegram::notify_supervisors_gated(
             app,
             &format!("⏰ تأخير عن الدوام — {today}"),
             body.trim_end(),
+            Some("tg_sup_alerts"),
         );
     }
 }

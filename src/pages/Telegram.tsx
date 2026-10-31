@@ -68,6 +68,30 @@ const PERMS: { key: string; label: string; hint: string }[] = [
   },
 ];
 
+/** ما يُرسل للمشرفين (مستلمي التنبيهات) — يُطفأ من قسم «ما المسموح للمشرف؟». */
+const SUP_PERMS: { key: string; label: string; hint: string }[] = [
+  {
+    key: "tg_sup_alerts",
+    label: "تنبيهات الحضور والتأخير",
+    hint: "🔔/⏰ غياب، خروج مفقود، وتأخير الدوام — تصل لمحادثات المشرفين",
+  },
+  {
+    key: "tg_sup_reason",
+    label: "إشعار «سبب غياب»",
+    hint: "✍️ سبب الغياب الذي يرسله الموظف بالأمر /سبب",
+  },
+  {
+    key: "tg_sup_leave",
+    label: "إشعار طلبات الإجازات الجديدة",
+    hint: "📝 طلب إجازة (سنوية/مرضية/بدون راتب) يقدّمه موظف من البوت",
+  },
+  {
+    key: "tg_sup_advance",
+    label: "إشعار طلبات السلف الجديدة",
+    hint: "💵 طلب سلفة مالية يقدّمه موظف من البوت",
+  },
+];
+
 const dt = (iso: string | null) =>
   iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)}` : "—";
 
@@ -80,6 +104,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
   const [alertStart, setAlertStart] = useState(true);
   const [alertEnd, setAlertEnd] = useState(true);
   const [perms, setPerms] = useState<Record<string, boolean>>({});
+  const [supPerms, setSupPerms] = useState<Record<string, boolean>>({});
   const [showToken, setShowToken] = useState(false);
 
   const [savingBot, setSavingBot] = useState(false);
@@ -137,7 +162,10 @@ export default function Telegram({ toast }: { toast: Toast }) {
       setAlertEnd((s.tg_alert_end ?? "1") !== "0");
       const p: Record<string, boolean> = {};
       for (const it of PERMS) p[it.key] = (s[it.key] ?? "1") !== "0";
+      const sp: Record<string, boolean> = {};
+      for (const it of SUP_PERMS) sp[it.key] = (s[it.key] ?? "1") !== "0";
       setPerms(p);
+      setSupPerms(sp);
       const [sup, ln, nt] = await Promise.all([
         telegramSupervisors(),
         telegramLinks(),
@@ -234,6 +262,16 @@ export default function Telegram({ toast }: { toast: Toast }) {
     } catch (e) {
       toast(String(e), "err");
       setPerms((p) => ({ ...p, [key]: !on }));
+    }
+  };
+
+  const toggleSupPerm = async (key: string, on: boolean) => {
+    setSupPerms((p) => ({ ...p, [key]: on }));
+    try {
+      await saveSetting(key, on ? "1" : "0");
+    } catch (e) {
+      toast(String(e), "err");
+      setSupPerms((p) => ({ ...p, [key]: !on }));
     }
   };
 
@@ -539,13 +577,46 @@ export default function Telegram({ toast }: { toast: Toast }) {
         </div>
       </section>
 
-      {/* ===== 3) المشرفون ===== */}
+      {/* ===== 3) ما المسموح للمشرف؟ ===== */}
+      <section className="card space-y-3">
+        <div>
+          <h2 className="font-extrabold text-lg">3) ما المسموح للمشرف؟ (مستلمو التنبيهات)</h2>
+          <p className="text-sm text-slate-500">
+            أطفئ أي نوع تنبيه تريد منعه — لن يصل لمحادثات المشرفين على تلجرام
+            (إشعارات سطح المكتب داخل البرنامج تبقى ظاهرة).
+          </p>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {SUP_PERMS.map((p) => (
+            <label
+              key={p.key}
+              className="flex items-start gap-3 py-3 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={!!supPerms[p.key]}
+                onChange={(e) => toggleSupPerm(p.key, e.target.checked)}
+                className="accent-indigo-600 w-4 h-4 mt-1"
+              />
+              <span className="flex-1">
+                <span className="block text-sm font-bold">{p.label}</span>
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  {p.hint}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
+
+      {/* ===== 4) المشرفون ===== */}
       <section className="card space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="font-extrabold text-lg">3) المشرفون (مستلمو التنبيهات)</h2>
+            <h2 className="font-extrabold text-lg">4) المشرفون (مستلمو التنبيهات)</h2>
             <p className="text-sm text-slate-500">
-              يصلهم: التأخير، الخروج المفقود، أسباب الغياب، وملخص نهاية اليوم.
+              يصلهم ما تفعّله في القسم «3) ما المسموح للمشرف؟» — والملخص نهاية
+              اليوم.
             </p>
           </div>
           <span className="badge bg-slate-100 text-slate-600">
@@ -646,11 +717,11 @@ export default function Telegram({ toast }: { toast: Toast }) {
         )}
       </section>
 
-      {/* ===== 4) الموظفون المرتبطون ===== */}
+      {/* ===== 5) الموظفون المرتبطون ===== */}
       <section className="card space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="font-extrabold text-lg">4) الموظفون المرتبطون</h2>
+            <h2 className="font-extrabold text-lg">5) الموظفون المرتبطون</h2>
             <p className="text-sm text-slate-500">
               يُربط الموظف تلقائياً حين يشارك رقم هاتفه مع البوت، بشرط أن يكون
               الرقم نفسه مسجّلاً في بطاقة الموظف. زر «منع» يوقفه عن استخدام
@@ -769,7 +840,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
       <section className="card space-y-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="font-extrabold text-lg">5) أسباب الغياب المرسلة</h2>
+            <h2 className="font-extrabold text-lg">6) أسباب الغياب المرسلة</h2>
             <p className="text-sm text-slate-500">
               تُسجَّل من البوت بالأمر /سبب، وتصل نسخة منها للمشرفين فوراً.
             </p>
@@ -801,7 +872,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
       <section className="card space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <h2 className="font-extrabold text-lg">6) 📘 دليل الاستخدام الكامل</h2>
+            <h2 className="font-extrabold text-lg">7) 📘 دليل الاستخدام الكامل</h2>
             <p className="text-sm text-slate-500">
               خطوات مرقّمة من الصفر حتى أول تنبيه على تلجرام.
             </p>

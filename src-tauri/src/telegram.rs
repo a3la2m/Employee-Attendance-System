@@ -86,6 +86,13 @@ fn hhmm(iso: Option<&String>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
+/// تنسيق مضاعف الإضافي للعرض بلا أصفار زائدة: 1.50 ← «1.5» · 2.00 ← «2».
+fn nfmt_mult(m: f64) -> String {
+    format!("{m:.2}")
+        .trim_end_matches(['0', '.'])
+        .to_string()
+}
+
 fn month_label(period: &str) -> String {
     let mut it = period.split('-');
     let y = it.next().unwrap_or("");
@@ -1644,7 +1651,7 @@ fn handle_photo(app: &tauri::AppHandle, token: &str, chat: &str, file_id: &str, 
                 .body(&alert_body)
                 .show();
             let _ = app.emit("bot-request", json!({ "kind": "leave", "employee_id": emp_id }));
-            notify_supervisors_async(app, &alert_title, &alert_body);
+            notify_supervisors_gated(app, &alert_title, &alert_body, Some("tg_sup_leave"));
         }
         Err(e) => {
             let err_msg = format!("⚠️ {e}");
@@ -1989,12 +1996,14 @@ fn handle_callback(app: &tauri::AppHandle, token: &str, cb: &Value) {
         let _ = send(token, &chat, &m, keyboard);
     }
     if let Some(body) = absence_alert {
-        notify_supervisors_async(app, "📝 سبب غياب", &body);
+        notify_supervisors_gated(app, "📝 سبب غياب", &body, Some("tg_sup_reason"));
     }
     if let Some((title, body, kind)) = request_alert {
         let _ = app.notification().builder().title(&title).body(&body).show();
         let _ = app.emit("bot-request", json!({ "kind": kind }));
-        notify_supervisors_async(app, &title, &body);
+        // إشعار المشرفين يُتحكَّم به من قسم «ما المسموح للمشرف؟»
+        let perm = if kind == "advance" { "tg_sup_advance" } else { "tg_sup_leave" };
+        notify_supervisors_gated(app, &title, &body, Some(perm));
     }
 }
 
@@ -2580,12 +2589,14 @@ fn handle_text(app: &tauri::AppHandle, token: &str, chat: &str, raw: &str) {
         let _ = send(token, chat, &m, keyboard);
     }
     if let Some(body) = absence_alert {
-        notify_supervisors_async(app, "📝 سبب غياب", &body);
+        notify_supervisors_gated(app, "📝 سبب غياب", &body, Some("tg_sup_reason"));
     }
     if let Some((title, body, kind)) = request_alert {
         let _ = app.notification().builder().title(&title).body(&body).show();
         let _ = app.emit("bot-request", json!({ "kind": kind }));
-        notify_supervisors_async(app, &title, &body);
+        // إشعار المشرفين يُتحكَّم به من قسم «ما المسموح للمشرف؟»
+        let perm = if kind == "advance" { "tg_sup_advance" } else { "tg_sup_leave" };
+        notify_supervisors_gated(app, &title, &body, Some(perm));
     }
 }
 
@@ -2642,6 +2653,12 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
     if mine.is_empty() {
         return format!("📭 لا توجد أيام حضور مسجّلة لك في {}.", month_label(period));
     }
+    // مضاعف الإضافي (الساعات الإضافية المدفوعة = الإضافي × المضاعف — يطابق
+    // احتساب الرواتب). الافتراض 1.5.
+    let ot_mult = commands::settings_map(conn)
+        .get("overtime_rate_mult")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(1.5);
     let sep = "━━━━━━━━━━━━━━━━━━";
     let mut out = format!("📋 كشف دوامك — {}\n{sep}\n", month_label(period));
     let mut present = 0;
@@ -2676,7 +2693,12 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
                         d.worked_min as f64 / 60.0
                     );
                     if d.overtime_min > 0 {
-                        line.push_str(&format!(" (+{:.1} إضافي)", d.overtime_min as f64 / 60.0));
+                        // الإضافي المدفوع = الإضافي × المضاعف (يُكتب المضاعف في التقرير)
+                        line.push_str(&format!(
+                            " (+{:.1} إضافي ×{})",
+                            d.overtime_min as f64 * ot_mult / 60.0,
+                            nfmt_mult(ot_mult)
+                        ));
                     }
                     line
                 } else {
@@ -2692,9 +2714,10 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة",
+        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة (×{} مضاعف الدفع)",
         worked as f64 / 60.0,
-        overtime as f64 / 60.0
+        overtime as f64 * ot_mult / 60.0,
+        nfmt_mult(ot_mult)
     ));
     if absent > 0 {
         out.push_str(&format!("\n❌ أيام الغياب: {absent}"));
@@ -2903,14 +2926,32 @@ fn employee_name(conn: &Connection, id: i64) -> String {
 
 /// يرسل رسالة لكل المشرفين المرتبطين (في خيط منفصل حتى لا يجمّد الواجهة).
 pub fn notify_supervisors_async(app: &tauri::AppHandle, title: &str, body: &str) {
+    notify_supervisors_gated(app, title, body, None);
+}
+
+/// نفس الإشعار لكن مع مفتاح سماح من إعدادات البوت (قسم «ما المسموح للمشرف؟») —
+/// يُرجع فوراً إن كان المفتاح مطفأً. المفاتيح الحالية: tg_sup_alerts /
+/// tg_sup_reason / tg_sup_leave / tg_sup_advance.
+pub fn notify_supervisors_gated(
+    app: &tauri::AppHandle,
+    title: &str,
+    body: &str,
+    perm: Option<&str>,
+) {
     let app = app.clone();
     let title = title.to_string();
     let body = body.to_string();
+    let perm = perm.map(|p| p.to_string());
     std::thread::spawn(move || {
         let state = app.state::<AppState>();
         let (token, chats) = {
             let Ok(conn) = state.db.lock() else { return };
             let s = settings(&conn);
+            if let Some(p) = &perm {
+                if !enabled(&s, p, true) {
+                    return;
+                }
+            }
             if !enabled(&s, "tg_enabled", false) {
                 return;
             }
@@ -3261,6 +3302,14 @@ mod tests {
         assert_eq!(reason_from_key("family"), Some("ظرف عائلي"));
         assert_eq!(reason_from_key("sick"), Some("مرض"));
         assert_eq!(reason_from_key("hack"), None);
+    }
+
+    #[test]
+    fn multiplier_formats_without_padding() {
+        assert_eq!(nfmt_mult(1.5), "1.5");
+        assert_eq!(nfmt_mult(2.0), "2");
+        assert_eq!(nfmt_mult(1.25), "1.25");
+        assert_eq!(nfmt_mult(1.0), "1");
     }
 
     #[test]
