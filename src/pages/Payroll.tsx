@@ -43,15 +43,10 @@ type Toast = (m: string, t?: "ok" | "err") => void;
 const n = (v: number) =>
   v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const AR_MONTHS = [
-  "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
-  "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر",
-];
-
-/** "2026-10" ← "أكتوبر 2026" (للعرض في التنقّل وسجل الموظف). */
+/** "2026-10" ← "10 2026" (للعرض في التنقّل وسجل الموظف — أرقام بدل أسماء الأشهر). */
 const pLabel = (p: string) => {
   const [y, m] = p.split("-");
-  return `${AR_MONTHS[Number(m) - 1] ?? m} ${y}`;
+  return `${m ?? ""} ${y ?? ""}`.trim();
 };
 
 /** شارة الحصالة: نص + ألوان (موحّدة مع بقية الشاشات — راجع lib/labels). */
@@ -1504,6 +1499,16 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 </button>
                 <button
                   className="btn-ghost bg-white"
+                  onClick={() => {
+                    setSlipOpen(false);
+                    setSelId("");
+                  }}
+                  title="إغلاق القسيمة والعودة لعرض جميع الموظفين"
+                >
+                  📋 عرض الكل
+                </button>
+                <button
+                  className="btn-ghost bg-white"
                   onClick={() => setSlipOpen(false)}
                   aria-label="إغلاق عرض كشف الراتب"
                 >
@@ -2234,7 +2239,7 @@ export function SlipSheet({
                         ساعات إضافية (×{n(slip.otMult)})
                       </td>
                       <td className="text-amber-700">
-                        {n(sel.overtime_hours)} ساعة
+                        {n(sel.overtime_hours * slip.otMult)} ساعة
                       </td>
                     </tr>
                     {holHours > 0 && (
@@ -2248,7 +2253,7 @@ export function SlipSheet({
                       </tr>
                     )}
                     <tr className="subtotal-row">
-                      <td className="text-right">إجمالي الساعات الفعلية</td>
+                      <td className="text-right">إجمالي الساعات الفعلية + الإضافية (×{n(slip.otMult)})</td>
                       <td>{n(sel.total_worked_hours)} ساعة</td>
                     </tr>
                     {advDed > 0 && (

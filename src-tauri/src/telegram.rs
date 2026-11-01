@@ -25,10 +25,6 @@ use tauri::Manager;
 
 const API: &str = "https://api.telegram.org/bot";
 
-const MONTHS: [&str; 12] = [
-    "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر",
-    "أكتوبر", "نوفمبر", "ديسمبر",
-];
 const WEEKDAYS: [&str; 7] = [
     "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد",
 ];
@@ -96,8 +92,8 @@ fn nfmt_mult(m: f64) -> String {
 fn month_label(period: &str) -> String {
     let mut it = period.split('-');
     let y = it.next().unwrap_or("");
-    let m: usize = it.next().and_then(|x| x.parse().ok()).unwrap_or(1);
-    format!("{} {}", MONTHS.get(m.saturating_sub(1)).unwrap_or(&""), y)
+    let m = it.next().unwrap_or("");
+    format!("{m} {y}").trim().to_string()
 }
 
 fn weekday_ar(date: &str) -> &'static str {
@@ -2741,11 +2737,12 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات الفعلية: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة (×{} مضاعف الدفع)\n📊 المجموع (شامل الإضافي): {:.1} ساعة",
+        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات الفعلية: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة (×{} مضاعف الدفع)\n📊 المجموع (بعد الاضافي ×{}): {:.1} ساعة",
         worked as f64 / 60.0,
         overtime as f64 * ot_mult / 60.0,
         nfmt_mult(ot_mult),
-        (worked + overtime) as f64 / 60.0
+        nfmt_mult(ot_mult),
+        (worked as f64 + overtime as f64 * ot_mult) / 60.0
     ));
     if absent > 0 {
         out.push_str(&format!("\n❌ أيام الغياب: {absent}"));
@@ -2826,6 +2823,7 @@ fn salary_text(
         )
         .unwrap_or_default();
     let cur = currency(s);
+    let ot_mult = s.get("overtime_rate_mult").and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.5);
     let snap: Option<(i64, f64, f64, f64, f64, f64, f64)> = conn
         .query_row(
             "SELECT days_present,total_worked_hours,overtime_hours,base_pay,
@@ -2856,8 +2854,8 @@ fn salary_text(
         out.push_str(&format!("\n{SEP}\n🧾 التفاصيل:"));
         out.push_str(&format!("\n{DOT} أيام الحضور: {days}"));
         out.push_str(&format!("\n{DOT} الساعات العادية: {hours:.1}"));
-        out.push_str(&format!("\n{DOT} الإضافي: {ot:.1} ساعة"));
-        out.push_str(&format!("\n{DOT} مجموع الساعات (شامل الإضافي): {:.1}", hours + ot));
+        out.push_str(&format!("\n{DOT} الإضافي (×{}): {:.1} ساعة", nfmt_mult(ot_mult), ot * ot_mult));
+        out.push_str(&format!("\n{DOT} مجموع الساعات (بعد الإضافي ×{}): {:.1}", nfmt_mult(ot_mult), hours + ot * ot_mult));
         out.push_str(&format!("\n{DOT} الأساسي: {base:.2} {cur}"));
         out.push_str(&format!("\n{DOT} البدلات: {allow:.2} {cur}"));
         out.push_str(&format!("\n{DOT} بدل العطلة: {weekend:.2} {cur}"));
