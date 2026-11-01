@@ -28,6 +28,7 @@ import { PrintHeader, PrintFooter } from "../components/PrintChrome";
 import { printCss, hhmm, hrs, todayISO } from "../lib/print";
 import { useToday, monthLocal } from "../lib/useToday";
 import { dayStatusInfo } from "../lib/labels";
+import Modal from "../components/Modal";
 import {
   readSlipCfg,
   slipToSettings,
@@ -48,6 +49,20 @@ const pLabel = (p: string) => {
   const [y, m] = p.split("-");
   return `${m ?? ""} ${y ?? ""}`.trim();
 };
+
+/** قائمة الأشهر (آخر 24 + 6 مستقبلية) لعرضها أرقاماً («10 2026») بدل
+ *  «Oct 2026» (الذي يعرضه input[type=month] حسب لغة المتصفح). */
+const MONTH_OPTIONS = (() => {
+  const out: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = -24; i <= 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push({ value: `${y}-${m}`, label: `${m} ${y}` });
+  }
+  return out;
+})();
 
 /** شارة الحصالة: نص + ألوان (موحّدة مع بقية الشاشات — راجع lib/labels). */
 const stInfo = (d: AttendanceDay): [string, string] => dayStatusInfo(d);
@@ -83,6 +98,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
   const [selId, setSelId] = useState<number | "">("");
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [slipOpen, setSlipOpen] = useState(false);
+  const [slipSettingsOpen, setSlipSettingsOpen] = useState(false);
   // سجل رواتب موظف بعينه (يُحفظ تلقائياً عند تعليم الراتب مدفوعاً)
   const [histOpen, setHistOpen] = useState(false);
   const [hist, setHist] = useState<EmployeePayrollRun[]>([]);
@@ -762,13 +778,17 @@ export default function Payroll({ toast }: { toast: Toast }) {
             >
               ‹
             </button>
-            <input
-              type="month"
+            <select
               className="input !w-40"
               value={period}
-              max={month}
               onChange={(e) => e.target.value && setPeriod(e.target.value)}
-            />
+            >
+              {MONTH_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
             <button
               className="btn-ghost !px-2.5 !py-1.5 text-lg font-bold leading-none disabled:opacity-30"
               onClick={() => shiftMonth(1)}
@@ -850,17 +870,20 @@ export default function Payroll({ toast }: { toast: Toast }) {
             📜 سجل الشهور
           </button>
         )}
-        {selId !== "" && (
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-slate-500">شهر القسيمة:</span>
-            <input
-              type="month"
+            <select
               className="input !w-40"
               value={period}
-              onChange={(e) => setPeriod(e.target.value)}
-            />
+              onChange={(e) => e.target.value && setPeriod(e.target.value)}
+            >
+              {MONTH_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
-        )}
         <button
           className="btn-primary"
           onClick={() => {
@@ -913,165 +936,179 @@ export default function Payroll({ toast }: { toast: Toast }) {
       </div>
 
       {/* ===== إعدادات الطباعة لقسيمة الراتب (للطباعة فقط — لا تمس الحساب) ===== */}
-      <div className="card space-y-4 print:hidden">
+      <div className="card space-y-3 print:hidden">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="font-extrabold text-lg">
-              🖨️ إعدادات الطباعة لقسيمة الراتب
-            </div>
+            <div className="font-extrabold text-lg">🖨️ إعدادات الطباعة لقسيمة الراتب</div>
             <div className="text-xs text-slate-500">
+              تقسيم المبلغ المطبوع قانونياً بعد الحساب — لا يغيّر الرواتب المحسوبة والصافي.
+              {slipCfg.enabled ? " (مُفعَّل)" : " (ملغى — كما هو)"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSlipSettingsOpen(true)}
+            className={`px-4 py-2 rounded-lg text-sm font-extrabold transition shadow-sm ${
+              slipCfg.enabled
+                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+            }`}
+            title="فتح نافذة تعديل إعدادات طباعة القسيمة"
+          >
+            {slipCfg.enabled ? "🟢 مُفعَّل — تعديل" : "⚪ ملغى — تعديل"}
+          </button>
+        </div>
+      </div>
+
+      {slipSettingsOpen && (
+        <Modal
+          onClose={() => setSlipSettingsOpen(false)}
+          title="🖨️ إعدادات الطباعة لقسيمة الراتب"
+          panelClass="max-w-3xl"
+        >
+          <div className="space-y-4">
+            <div className="text-xs text-slate-500 leading-relaxed">
               تقسيم المبلغ المطبوع قانونياً بعد الحساب: الأساسي بسعر ساعة الحد
               الأدنى، والإضافي بمضاعفه، وباقي المبلغ على بدلات مسمّاة — لا
               يغيّر الرواتب المحسوبة والصافي.
             </div>
-          </div>
-          <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
-            <input
-              type="checkbox"
-              className="accent-indigo-600 w-4 h-4"
-              checked={slipCfg.enabled}
-              onChange={(e) =>
-                setSlipDraft({ ...slipCfg, enabled: e.target.checked })
-              }
-            />
-            {slipCfg.enabled ? "مُفعَّل للطباعة" : "ملغى (كما هو)"}
-          </label>
-        </div>
-
-        {slipCfg.enabled && (
-          <>
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-              <label className="text-sm font-medium">
-                سعر الساعة الأساسي
-                <input
-                  type="number"
-                  className="input mt-1"
-                  min={0}
-                  step={0.25}
-                  value={slipCfg.rate}
-                  onChange={(e) => setSlipNum("rate", e.target.value)}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                معامل ساعة الإضافي
-                <input
-                  type="number"
-                  className="input mt-1"
-                  min={0}
-                  step={0.1}
-                  value={slipCfg.otMult}
-                  onChange={(e) => setSlipNum("otMult", e.target.value)}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                بدل طبيعة العمل %
-                <input
-                  type="number"
-                  className="input mt-1"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={slipCfg.pWork}
-                  onChange={(e) => setSlipNum("pWork", e.target.value)}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                بدل المخاطرة والسلامة المهنية %
-                <input
-                  type="number"
-                  className="input mt-1"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={slipCfg.pRisk}
-                  onChange={(e) => setSlipNum("pRisk", e.target.value)}
-                />
-              </label>
-              <label className="text-sm font-medium">
-                مكافأة الإنجاز / الإنتاجية %
-                <input
-                  type="number"
-                  className="input mt-1"
-                  min={0}
-                  max={100}
-                  step={0.5}
-                  value={slipCfg.pBonus}
-                  onChange={(e) => setSlipNum("pBonus", e.target.value)}
-                />
-              </label>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span
-                className={`px-3 py-1 rounded-full text-sm font-extrabold ${
-                  slipSumOk(slipCfg)
-                    ? "bg-emerald-100 text-emerald-700"
-                    : "bg-red-100 text-red-700"
-                }`}
-              >
-                مجموع النِسب: {slipPctSum(slipCfg)}%
-                {slipSumOk(slipCfg) ? " ✓" : " — يجب أن يساوي 100%"}
-              </span>
-              <button
-                className="btn-primary"
-                disabled={!slipSumOk(slipCfg)}
-                onClick={saveSlip}
-              >
-                💾 حفظ الإعدادات
-              </button>
-            </div>
-
-            <div className="text-xs text-slate-500 leading-relaxed">
-              الأساسي = ساعات الدوام × سعر الساعة · الإضافي = ساعات الإضافي ×
-              المعامل × سعر الساعة · وباقي المبلغ المستحق يُقسَّم على البدلات
-              الثلاثة بنسبة كل بدل. بدلات الفطور والمواصلات وبدل العطلة ودوام
-              العطلة الرسمية والأيام التعويضية تُعرض كما هي، والصافي المستحق لا
-              يتغيّر.
-            </div>
-
-            {sel && slipSplit && (
-              <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                <div className="text-xs font-bold text-indigo-700 mb-2">
-                  معاينة تقسيم قسيمة {selName} — {period}
+            <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
+              <input
+                type="checkbox"
+                className="accent-indigo-600 w-4 h-4"
+                checked={slipCfg.enabled}
+                onChange={(e) =>
+                  setSlipDraft({ ...slipCfg, enabled: e.target.checked })
+                }
+              />
+              {slipCfg.enabled ? "مُفعَّل للطباعة" : "ملغى (كما هو)"}
+            </label>
+            {slipCfg.enabled && (
+              <>
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                  <label className="text-sm font-medium">
+                    سعر الساعة الأساسي
+                    <input
+                      type="number"
+                      className="input mt-1"
+                      min={0}
+                      step={0.25}
+                      value={slipCfg.rate}
+                      onChange={(e) => setSlipNum("rate", e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-medium">
+                    معامل ساعة الإضافي
+                    <input
+                      type="number"
+                      className="input mt-1"
+                      min={0}
+                      step={0.1}
+                      value={slipCfg.otMult}
+                      onChange={(e) => setSlipNum("otMult", e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-medium">
+                    بدل طبيعة العمل %
+                    <input
+                      type="number"
+                      className="input mt-1"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={slipCfg.pWork}
+                      onChange={(e) => setSlipNum("pWork", e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-medium">
+                    بدل المخاطرة والسلامة المهنية %
+                    <input
+                      type="number"
+                      className="input mt-1"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={slipCfg.pRisk}
+                      onChange={(e) => setSlipNum("pRisk", e.target.value)}
+                    />
+                  </label>
+                  <label className="text-sm font-medium">
+                    مكافأة الإنجاز / الإنتاجية %
+                    <input
+                      type="number"
+                      className="input mt-1"
+                      min={0}
+                      max={100}
+                      step={0.5}
+                      value={slipCfg.pBonus}
+                      onChange={(e) => setSlipNum("pBonus", e.target.value)}
+                    />
+                  </label>
                 </div>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
-                  {[
-                    ["الأساسي (المطبوع)", n(slipSplit.basic)],
-                    ["الإضافي (المطبوع)", n(slipSplit.ot)],
-                    ["يُقسَّم على البدلات", n(slipSplit.pool)],
-                    ["الصافي (لا يتغير)", n(sel.net_pay)],
-                  ].map(([k, v]) => (
-                    <div
-                      key={k}
-                      className="rounded-lg bg-white border border-slate-200 p-2"
-                    >
-                      <div className="text-[11px] text-slate-500">{k}</div>
-                      <div className="font-extrabold">
-                        {v} {curSym}
-                      </div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span
+                    className={`px-3 py-1 rounded-full text-sm font-extrabold ${
+                      slipSumOk(slipCfg)
+                        ? "bg-emerald-100 text-emerald-700"
+                        : "bg-red-100 text-red-700"
+                    }`}
+                  >
+                    مجموع النِسب: {slipPctSum(slipCfg)}%
+                    {slipSumOk(slipCfg) ? " ✓" : " — يجب أن يساوي 100%"}
+                  </span>
+                  <button
+                    className="btn-primary"
+                    disabled={!slipSumOk(slipCfg)}
+                    onClick={saveSlip}
+                  >
+                    💾 حفظ الإعدادات
+                  </button>
+                </div>
+                {sel && slipSplit && (
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                    <div className="text-xs font-bold text-indigo-700 mb-2">
+                      معاينة تقسيم قسيمة {selName} — {period}
                     </div>
-                  ))}
-                </div>
-              </div>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
+                      {[
+                        ["الأساسي (المطبوع)", n(slipSplit.basic)],
+                        ["الإضافي (المطبوع)", n(slipSplit.ot)],
+                        ["يُقسَّم على البدلات", n(slipSplit.pool)],
+                        ["الصافي (لا يتغير)", n(sel.net_pay)],
+                      ].map(([k, v]) => (
+                        <div
+                          key={k}
+                          className="rounded-lg bg-white border border-slate-200 p-2"
+                        >
+                          <div className="text-[11px] text-slate-500">{k}</div>
+                          <div className="font-extrabold">
+                            {v} {curSym}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {lastSnap && (
+                  <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2.5 leading-relaxed">
+                    🕓 آخر قسيمة محفوظة لـ<b>{selName}</b> (لقطة إعدادات الطباعة
+                    السارية وقتها): {lastSnap.printed_at?.slice(0, 10) || "—"} — سعر
+                    الساعة {n(lastSnap.rate)}، معامل الإضافي {n(lastSnap.ot_mult)}،
+                    النِسب {lastSnap.p_work}/{lastSnap.p_risk}/{lastSnap.p_bonus}%،
+                    صافي {n(lastSnap.net)} {curSym}
+                    <span className="text-slate-400">
+                      {" "}
+                      — تُحفظ مع كل طباعة قسيمة وكل تعليم كمدفوع، فلا تتأثر بتغيير
+                      الإعدادات لاحقاً.
+                    </span>
+                  </div>
+                )}
+              </>
             )}
+          </div>
+        </Modal>
+      )}
 
-            {lastSnap && (
-              <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2.5 leading-relaxed">
-                🕓 آخر قسيمة محفوظة لـ<b>{selName}</b> (لقطة إعدادات الطباعة
-                السارية وقتها): {lastSnap.printed_at?.slice(0, 10) || "—"} — سعر
-                الساعة {n(lastSnap.rate)}، معامل الإضافي {n(lastSnap.ot_mult)}،
-                النِسب {lastSnap.p_work}/{lastSnap.p_risk}/{lastSnap.p_bonus}%،
-                صافي {n(lastSnap.net)} {curSym}
-                <span className="text-slate-400">
-                  {" "}
-                  — تُحفظ مع كل طباعة قسيمة وكل تعليم كمدفوع، فلا تتأثر بتغيير
-                  الإعدادات لاحقاً.
-                </span>
-              </div>
-            )}
-          </>
-        )}
-      </div>
 
       {/* ===== بطاقة تفصيل الموظف: أيام الدوام بدخولها وخروجها ===== */}
       {selId !== "" && (
@@ -1486,12 +1523,17 @@ export default function Payroll({ toast }: { toast: Toast }) {
             <div className="flex items-center justify-between gap-2 mb-1.5">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-bold text-white">شهر القسيمة:</span>
-                <input
-                  type="month"
+                <select
                   className="input !w-40 bg-white"
                   value={period}
-                  onChange={(e) => setPeriod(e.target.value)}
-                />
+                  onChange={(e) => e.target.value && setPeriod(e.target.value)}
+                >
+                  {MONTH_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="flex gap-2">
                 <button className="btn-primary" onClick={() => printSheet(true)}>
@@ -2254,7 +2296,7 @@ export function SlipSheet({
                     )}
                     <tr className="subtotal-row">
                       <td className="text-right">إجمالي الساعات الفعلية + الإضافية (×{n(slip.otMult)})</td>
-                      <td>{n(sel.total_worked_hours)} ساعة</td>
+                      <td>{n(basicHours + sel.overtime_hours * slip.otMult)} ساعة</td>
                     </tr>
                     {advDed > 0 && (
                       <>
