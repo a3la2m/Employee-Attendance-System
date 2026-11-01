@@ -2855,8 +2855,9 @@ fn salary_text(
     if let Some((days, hours, ot, base, allow, weekend, adv)) = snap {
         out.push_str(&format!("\n{SEP}\n🧾 التفاصيل:"));
         out.push_str(&format!("\n{DOT} أيام الحضور: {days}"));
-        out.push_str(&format!("\n{DOT} الساعات: {hours:.1}"));
+        out.push_str(&format!("\n{DOT} الساعات العادية: {hours:.1}"));
         out.push_str(&format!("\n{DOT} الإضافي: {ot:.1} ساعة"));
+        out.push_str(&format!("\n{DOT} مجموع الساعات (شامل الإضافي): {:.1}", hours + ot));
         out.push_str(&format!("\n{DOT} الأساسي: {base:.2} {cur}"));
         out.push_str(&format!("\n{DOT} البدلات: {allow:.2} {cur}"));
         out.push_str(&format!("\n{DOT} بدل العطلة: {weekend:.2} {cur}"));

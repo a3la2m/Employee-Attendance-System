@@ -1109,11 +1109,12 @@ export default function Payroll({ toast }: { toast: Toast }) {
 
           {sel ? (
             <>
-            <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 lg:grid-cols-7 gap-3">
               {[
                 ["أيام الحضور", String(sel.days_present), ""],
-                ["ساعات فعلية", n(sel.total_worked_hours), ""],
+                ["ساعات عادية (بدون إضافي)", n(sel.total_worked_hours), ""],
                 ["إضافي (ساعة)", n(sel.overtime_hours), ""],
+                ["مجموع الساعات (شامل الإضافي)", n(sel.total_worked_hours + sel.overtime_hours), "text-slate-700"],
                 ["الأساسي", n(sel.base_pay), "text-slate-900"],
                 ["البدلات", n(sel.allowances), "text-emerald-600"],
                 [
