@@ -1933,7 +1933,7 @@ export function SlipSheet({
   // ملخص الساعات أسفل جدول الأيام: الأساسية ×1.0 والإضافية ×1.5 (وعطلة رسمية إن وُجدت)
   const holHours = holidayHoursOf(slipDays);
   const basicHours = sel
-    ? Math.max(0, sel.total_worked_hours - sel.overtime_hours - holHours)
+    ? Math.max(0, sel.total_worked_hours - holHours)
     : 0;
   // الاستقطاعات والصافي: الإجمالي قبل خصم السلفة (لعرض «إجمالي الاستحقاقات»)
   const advDed = sel ? (sel.advance_deduction ?? 0) : 0;

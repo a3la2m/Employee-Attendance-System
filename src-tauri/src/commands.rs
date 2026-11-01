@@ -6419,3 +6419,28 @@ mod tests {
         assert!(again.is_empty(), "التكرار ليومه ممنوع");
     }
 }
+
+
+#[cfg(test)]
+mod payroll_check_mod {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    #[ignore]
+    fn payroll_check_hsnsn() {
+        let db_path = "/home/alaa/.config/com.attendance.system/attendance.db";
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        let res = payroll_impl(&conn, "2026-10").unwrap();
+        for r in res {
+            if r.employee_name == "حسنسن" {
+                println!("NAME={}", r.employee_name);
+                println!("days_present={}", r.days_present);
+                println!("total_worked_hours={}", r.total_worked_hours);
+                println!("overtime_hours={}", r.overtime_hours);
+                println!("base_pay={}", r.base_pay);
+                println!("net_pay={}", r.net_pay);
+            }
+        }
+    }
+}

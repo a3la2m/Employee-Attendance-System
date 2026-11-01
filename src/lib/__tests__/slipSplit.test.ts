@@ -44,7 +44,7 @@ const res = (over: Partial<PayrollResult> = {}): PayrollResult => ({
   pin: "1",
   period: "2026-10",
   days_present: 26,
-  total_worked_hours: 190, // 140 عادي + 50 إضافي
+  total_worked_hours: 140, // 140 عادي (الإضافي 50 منفصل)
   overtime_hours: 50,
   base_pay: 3225, // 140×15 + 50×15×1.5 (الأساسي يشمل الإضافي للعرض)
   allowances: 182, // 7×26
@@ -168,7 +168,7 @@ describe("splitSlip", () => {
     const days = [
       day({ holiday: true, worked_min: 300, overtime_min: 0, status: "present" }),
     ];
-    const rr = res({ total_worked_hours: 195 }); // 140 عادي + 50 إضافي + 5 عطلة
+    const rr = res({ total_worked_hours: 145 }); // 140 عادي + 5 عطلة (الإضافي 50 منفصل)
     const s = splitSlip(rr, days, cfg())!;
     expect(s.regularHours).toBe(140);
     expect(s.basic).toBe(1190);

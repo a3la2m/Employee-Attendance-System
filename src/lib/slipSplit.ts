@@ -136,7 +136,7 @@ export function splitSlip(
 
   const regularHours = Math.max(
     0,
-    sel.total_worked_hours - sel.overtime_hours - holidayHoursOf(days),
+    sel.total_worked_hours - holidayHoursOf(days),
   );
   // بقية الأسطر المعروضة كما هي — تُطرح من الإجمالي قبل تقسيم الباقي
   // ملاحظة: الصافي المستحق = الإجمالي − خصم السلفة (إن وُجد)، لذا فإن الإجمالي قبل خصم السلفة = net_pay + advance_deduction

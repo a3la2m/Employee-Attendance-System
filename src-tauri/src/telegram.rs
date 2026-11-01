@@ -2707,15 +2707,17 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
             }
             _ if d.first_in.is_some() => {
                 present += 1;
-                worked += d.worked_min;
+                worked += (d.worked_min - d.overtime_min).max(0);
                 overtime += d.overtime_min.max(0);
                 if d.last_out.is_some() {
-                    // دخول ← انصراف مع الساعات (رقم واحد بعد الفاصلة) والإضافي إن وجد.
+                    // دخول ← انصراف: الساعات الفعلية (بدون الإضافي) + الإضافي
+                    // منفصلاً — يطابق كشف الرواتب (total_worked_hours ي استثناء الإضافي).
+                    let regular_min = (d.worked_min - d.overtime_min).max(0);
                     let mut line = format!(
                         "🟢 {dd}/{mm} {wd} — {} ← {} · {:.1} س",
                         hhmm(d.first_in.as_ref()),
                         hhmm(d.last_out.as_ref()),
-                        d.worked_min as f64 / 60.0
+                        regular_min as f64 / 60.0
                     );
                     if d.overtime_min > 0 {
                         // الإضافي المدفوع = الإضافي × المضاعف (يُكتب المضاعف في التقرير)
@@ -2739,10 +2741,11 @@ fn sheet_text(conn: &Connection, emp_id: i64, period: &str) -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة (×{} مضاعف الدفع)",
+        "{sep}\n🧾 الملخص\n✅ أيام الدوام: {present} يوم\n⏱️ مجموع الساعات الفعلية: {:.1} ساعة\n🚀 الساعات الإضافية: {:.1} ساعة (×{} مضاعف الدفع)\n📊 المجموع (شامل الإضافي): {:.1} ساعة",
         worked as f64 / 60.0,
         overtime as f64 * ot_mult / 60.0,
-        nfmt_mult(ot_mult)
+        nfmt_mult(ot_mult),
+        (worked + overtime) as f64 / 60.0
     ));
     if absent > 0 {
         out.push_str(&format!("\n❌ أيام الغياب: {absent}"));
@@ -2764,12 +2767,19 @@ fn today_text(conn: &Connection, emp_id: i64, s: &HashMap<String, String>) -> St
                 format!("🗓️ دوام اليوم — {today}\n{SEP}\n🏖️ إجازة مسجّلة لك اليوم.")
             } else if let Some(fin) = &d.first_in {
                 match &d.last_out {
-                    Some(out) => format!(
-                        "📅 دوام اليوم — {today}\n{SEP}\n✅ دخول: {}\n✅ خروج: {}\n⏱️ الساعات: {:.1}",
-                        hhmm(Some(fin)),
-                        hhmm(Some(out)),
-                        d.worked_min as f64 / 60.0
-                    ),
+                    Some(out) => {
+                        let regular = (d.worked_min - d.overtime_min).max(0);
+                        let mut s = format!(
+                            "📅 دوام اليوم — {today}\n{SEP}\n✅ دخول: {}\n✅ خروج: {}\n⏱️ الساعات الفعلية: {:.1}",
+                            hhmm(Some(fin)),
+                            hhmm(Some(out)),
+                            regular as f64 / 60.0
+                        );
+                        if d.overtime_min > 0 {
+                            s.push_str(&format!("\n🚀 إضافي: {:.1} ساعة", d.overtime_min as f64 / 60.0));
+                        }
+                        s
+                    },
                     None => format!(
                         "📅 دوام اليوم — {today}\n{SEP}\n✅ دخول: {}\n⏳ لم تسجّل انصرافك بعد — لا تنسَ الختم عند المغادرة.",
                         hhmm(Some(fin))

@@ -577,7 +577,7 @@ export default function Attendance({
                     (r) => r.first_in && !r.absent,
                   ).length;
                   const absent = rows.filter((r) => r.absent).length;
-                  const worked = rows.reduce((a, r) => a + r.worked_min, 0);
+                  const worked = rows.reduce((a, r) => a + r.worked_min - r.overtime_min, 0);
                   const late = rows.reduce((a, r) => a + r.late_min, 0);
                   const ot = rows.reduce((a, r) => a + r.overtime_min, 0);
                   const holWork = rows.filter(
