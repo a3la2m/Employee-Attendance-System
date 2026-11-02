@@ -322,6 +322,13 @@ export default function Attendance({
           <button className="btn-primary" onClick={fullSync} disabled={busy}>
             🔐 سحب من الجهاز
           </button>
+          <button
+            className="btn-ghost"
+            onClick={() => setEmpAttOpen(true)}
+            title="فتح نافذة عرض وتعديل حضور موظف في فترة معيّنة"
+          >
+            📋 عرض حضور موظف
+          </button>
         </div>
       </div>
 
@@ -701,16 +708,6 @@ export default function Attendance({
       </div>
 
       {/* ===== زر: عرض حضور موظف في فترة معيّنة (popup) ===== */}
-      <div className="flex justify-end print:hidden">
-        <button
-          className="btn-primary"
-          onClick={() => setEmpAttOpen(true)}
-          title="فتح نافذة عرض وتعديل حضور موظف في فترة معيّنة"
-        >
-          📋 عرض حضور موظف
-        </button>
-      </div>
-
       {/* نافذة التعديل اليدوي */}
       {editing && (
         <EditDayModal
@@ -1026,6 +1023,7 @@ export function EditDayModal({
       onClose={onClose}
       title="✏️ تعديل الحضور"
       panelClass="max-w-md"
+      backdropClass="z-[60]"
     >
       <div className="text-sm text-slate-500 -mt-1">
         <b>{row.name}</b> · اليوم: <b className="font-mono">{date}</b> · البصمة #
