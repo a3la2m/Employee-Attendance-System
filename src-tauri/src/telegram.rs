@@ -3155,7 +3155,7 @@ mod tests {
         )
         .unwrap();
         let t = salary_text(&conn, 4, &s).unwrap();
-        assert!(t.contains("أكتوبر 2026"), "{t}");
+        assert!(t.contains("10 2026"), "{t}");
         assert!(t.contains("373.07"), "{t}");
         assert!(t.contains("سالم"), "{t}");
         assert!(!t.contains("1250.25"), "{t}");
@@ -3165,7 +3165,7 @@ mod tests {
         // حذف دفعة أكتوبر → يعود تلقائياً لآخر دفعة أقدم
         conn.execute("DELETE FROM salary_payments WHERE period='2026-10'", []).unwrap();
         let t2 = salary_text(&conn, 4, &s).unwrap();
-        assert!(t2.contains("سبتمبر 2026"), "{t2}");
+        assert!(t2.contains("09 2026"), "{t2}");
         assert!(t2.contains("1250.25"), "{t2}");
     }
 

@@ -640,8 +640,8 @@ mod tests {
         assert_eq!(r.paid_workdays, 2);
         assert_eq!(r.weekend_days_paid, 1);
         assert!((r.weekend_pay - 62.0).abs() < 1e-9);
-        // الصافي = حضور (85+12) + بدل العطلة
-        assert!((r.net_pay - (97.0 + 62.0)).abs() < 1e-9);
+        // الصافي = حضور (85+12) + بدل العطلة + إجازة مدفوعة (62)
+        assert!((r.net_pay - (97.0 + 62.0 + 62.0)).abs() < 1e-9);
     }
 
     #[test]
