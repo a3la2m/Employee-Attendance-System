@@ -316,18 +316,18 @@ export default function Attendance({
               ›
             </button>
           </div>
-          <button className="btn-ghost" onClick={recompute} disabled={busy}>
-            🔄 إعادة احتساب
-          </button>
-          <button className="btn-primary" onClick={fullSync} disabled={busy}>
-            🔐 سحب من الجهاز
-          </button>
           <button
             className="btn-ghost"
             onClick={() => setEmpAttOpen(true)}
             title="فتح نافذة عرض وتعديل حضور موظف في فترة معيّنة"
           >
             📋 عرض حضور موظف
+          </button>
+          <button className="btn-ghost" onClick={recompute} disabled={busy}>
+            🔄 إعادة احتساب
+          </button>
+          <button className="btn-primary" onClick={fullSync} disabled={busy}>
+            🔐 سحب من الجهاز
           </button>
         </div>
       </div>
