@@ -90,6 +90,11 @@ export default function Attendance({
   const [emps, setEmps] = useState<Employee[]>([]);
   const [editing, setEditing] = useState<DailyRow | null>(null);
   const [editingDate, setEditingDate] = useState<string>("");
+  const [empAttOpen, setEmpAttOpen] = useState(false);
+  const [empAttEmpId, setEmpAttEmpId] = useState<number | "">("");
+  const [empAttPeriod, setEmpAttPeriod] = useState(monthLocal(new Date()));
+  const [empAttDays, setEmpAttDays] = useState<AttendanceDay[]>([]);
+  const [empAttLoading, setEmpAttLoading] = useState(false);
   const [compOff, setCompOff] = useState<DailyRow | null>(null);
   // يوم دوام في عطلة رسمية تُعرض له تفاصيل التعويض (زر ⓘ)
   const [infoDay, setInfoDay] = useState<{
@@ -100,7 +105,6 @@ export default function Attendance({
   const [choiceBusy, setChoiceBusy] = useState<number | null>(null);
   const [cfg, setCfg] = useState<Settings>({});
   const [holidays, setHolidays] = useState<Holiday[]>([]);
-  const [selectedEmpId, setSelectedEmpId] = useState<number | "">("");
   // طلب مُعلَّق من تنبيه «يوم بدل»: ننتظر تحميل التقرير اليومي ثم نفتح النافذة
   const [pendingComp, setPendingComp] = useState<{ date: string; employeeId?: number } | null>(
     null,
@@ -181,6 +185,24 @@ export default function Attendance({
   useEffect(() => {
     loadDaily();
   }, [dailyDate]);
+
+  const loadEmpAtt = async () => {
+    if (!empAttOpen || empAttEmpId === "") return;
+    setEmpAttLoading(true);
+    try {
+      const all = await getMonthDays(empAttPeriod);
+      setEmpAttDays(all.filter((d) => d.employee_id === Number(empAttEmpId)));
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setEmpAttLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadEmpAtt();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [empAttOpen, empAttEmpId, empAttPeriod]);
 
   const recompute = async () => {
     setBusy(true);
@@ -678,130 +700,15 @@ export default function Attendance({
         </div>
       </div>
 
-      {/* ===== عرض/تعديل حضور موظف في فترة معيّنة ===== */}
-      <div className="card space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-bold">✏️ عرض وتعديل حضور موظف في فترة معيّنة</h2>
-            <div className="text-xs text-slate-500">
-              اختر موظفاً والشهر (أعلاه) لعرض أيامه — اضغط ✏️ على أي يوم لتعديله
-              (ضبط أوقات / غياب / تلقائي).
-            </div>
-          </div>
-          <select
-            className="input !w-72"
-            value={selectedEmpId}
-            onChange={(e) =>
-              setSelectedEmpId(e.target.value === "" ? "" : Number(e.target.value))
-            }
-          >
-            <option value="">— اختر موظفاً —</option>
-            {emps.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name}{e.pin ? ` (#${e.pin})` : ""}{e.active ? "" : " — موقوف"}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {selectedEmpId !== "" && (
-          <div className="overflow-auto max-h-[32rem]">
-            <table className="w-full">
-              <thead className="sticky top-0">
-                <tr>
-                  <th className="th">التاريخ</th>
-                  <th className="th">اليوم</th>
-                  <th className="th">الحضور</th>
-                  <th className="th">الانصراف</th>
-                  <th className="th">الساعات</th>
-                  <th className="th">الحالة</th>
-                  <th className="th">تعديل</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(() => {
-                  const rows = days.filter(
-                    (d) => d.employee_id === Number(selectedEmpId),
-                  );
-                  if (rows.length === 0) {
-                    return (
-                      <tr>
-                        <td className="td text-center text-slate-400 py-6" colSpan={7}>
-                          لا توجد أيام محسوبة لهذا الموظف في هذا الشهر.
-                        </td>
-                      </tr>
-                    );
-                  }
-                  const emp = emps.find((e) => e.id === Number(selectedEmpId));
-                  return rows.map((d) => {
-                    const wd = ["أحد","إثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][new Date(d.date + "T00:00:00").getDay()];
-                    const [label, cls] = dayStatusInfo(d);
-                    const row: DailyRow = {
-                      id: d.id,
-                      employee_id: d.employee_id,
-                      name: emp?.name ?? `#${d.employee_id}`,
-                      pin: emp?.pin ?? "",
-                      first_in: d.first_in,
-                      last_out: d.last_out,
-                      worked_min: d.worked_min,
-                      late_min: d.late_min,
-                      early_leave_min: d.early_leave_min,
-                      overtime_min: d.overtime_min,
-                      absent: d.absent,
-                      status: d.status,
-                      manual: d.manual,
-                      leave_type: d.leave_type,
-                      leave_paid: d.leave_paid,
-                      holiday: d.holiday,
-                      no_break: d.no_break,
-                      no_meal: d.no_meal,
-                    };
-                    return (
-                      <tr key={d.id} className="hover:bg-slate-50">
-                        <td className="td font-mono text-right">{d.date}</td>
-                        <td className="td">{wd}</td>
-                        <td className="td font-mono">{hhmm(d.first_in)}</td>
-                        <td className="td font-mono">
-                          {hhmm(d.last_out)}
-                          {d.last_out && d.last_out.slice(0, 10) !== d.date && (
-                            <div className="text-[10px] text-slate-400">
-                              {d.last_out.slice(0, 10)}
-                            </div>
-                          )}
-                        </td>
-                        <td className="td">
-                          {hm(d.worked_min)}
-                          {d.overtime_min > 0 && (
-                            <span className="text-[10px] text-amber-600 mr-1">
-                              (+{hm(d.overtime_min)} إضافي)
-                            </span>
-                          )}
-                        </td>
-                        <td className="td">
-                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${cls}`}>
-                            {label}
-                          </span>
-                        </td>
-                        <td className="td">
-                          <button
-                            className="btn-ghost !py-0.5 !px-2 text-xs"
-                            onClick={() => {
-                              setEditingDate(d.date);
-                              setEditing(row);
-                            }}
-                            title="تعديل هذا اليوم"
-                          >
-                            ✏️ تعديل
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  });
-                })()}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* ===== زر: عرض حضور موظف في فترة معيّنة (popup) ===== */}
+      <div className="flex justify-end print:hidden">
+        <button
+          className="btn-primary"
+          onClick={() => setEmpAttOpen(true)}
+          title="فتح نافذة عرض وتعديل حضور موظف في فترة معيّنة"
+        >
+          📋 عرض حضور موظف
+        </button>
       </div>
 
       {/* نافذة التعديل اليدوي */}
@@ -818,9 +725,159 @@ export default function Attendance({
           onSaved={() => {
             load();
             loadDaily();
+            loadEmpAtt();
             listEmployees().then(setEmps).catch(() => {});
           }}
         />
+      )}
+
+      {/* نافذة «عرض حضور موظف في فترة معيّنة» */}
+      {empAttOpen && (
+        <Modal
+          onClose={() => setEmpAttOpen(false)}
+          title="📋 عرض وتعديل حضور موظف في فترة معيّنة"
+          panelClass="max-w-5xl"
+        >
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold">الموظف:</span>
+                <select
+                  className="input !w-64"
+                  value={empAttEmpId}
+                  onChange={(e) =>
+                    setEmpAttEmpId(e.target.value === "" ? "" : Number(e.target.value))
+                  }
+                >
+                  <option value="">— اختر موظفاً —</option>
+                  {emps.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.name}{e.pin ? ` (#${e.pin})` : ""}{e.active ? "" : " — موقوف"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold">الفترة:</span>
+                <select
+                  className="input !w-40"
+                  value={empAttPeriod}
+                  onChange={(e) => setEmpAttPeriod(e.target.value)}
+                >
+                  {MONTH_OPTIONS_ATT.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                className="btn-ghost"
+                onClick={loadEmpAtt}
+                disabled={empAttLoading || empAttEmpId === ""}
+              >
+                🔄 تحديث
+              </button>
+            </div>
+
+            {empAttEmpId === "" ? (
+              <div className="text-center text-slate-400 py-8">
+                اختر موظفاً لعرض حضوره.
+              </div>
+            ) : empAttLoading ? (
+              <div className="text-center text-slate-400 py-8">جارٍ التحميل…</div>
+            ) : empAttDays.length === 0 ? (
+              <div className="text-center text-slate-400 py-8">
+                لا توجد أيام محسوبة لهذا الموظف في هذه الفترة.
+              </div>
+            ) : (
+              <div className="overflow-auto max-h-[60vh]">
+                <table className="w-full">
+                  <thead className="sticky top-0">
+                    <tr>
+                      <th className="th">التاريخ</th>
+                      <th className="th">اليوم</th>
+                      <th className="th">الحضور</th>
+                      <th className="th">الانصراف</th>
+                      <th className="th">الساعات</th>
+                      <th className="th">الحالة</th>
+                      <th className="th">تعديل</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {empAttDays.map((d) => {
+                      const wd = ["أحد","إثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][
+                        new Date(d.date + "T00:00:00").getDay()
+                      ];
+                      const [label, cls] = dayStatusInfo(d);
+                      const emp = emps.find((e) => e.id === d.employee_id);
+                      const row: DailyRow = {
+                        id: d.id,
+                        employee_id: d.employee_id,
+                        name: emp?.name ?? `#${d.employee_id}`,
+                        pin: emp?.pin ?? "",
+                        first_in: d.first_in,
+                        last_out: d.last_out,
+                        worked_min: d.worked_min,
+                        late_min: d.late_min,
+                        early_leave_min: d.early_leave_min,
+                        overtime_min: d.overtime_min,
+                        absent: d.absent,
+                        status: d.status,
+                        manual: d.manual,
+                        leave_type: d.leave_type,
+                        leave_paid: d.leave_paid,
+                        holiday: d.holiday,
+                        no_break: d.no_break,
+                        no_meal: d.no_meal,
+                      };
+                      return (
+                        <tr key={d.id} className="hover:bg-slate-50">
+                          <td className="td font-mono text-right">{d.date}</td>
+                          <td className="td">{wd}</td>
+                          <td className="td font-mono">{hhmm(d.first_in)}</td>
+                          <td className="td font-mono">
+                            {hhmm(d.last_out)}
+                            {d.last_out && d.last_out.slice(0, 10) !== d.date && (
+                              <div className="text-[10px] text-slate-400">
+                                {d.last_out.slice(0, 10)}
+                              </div>
+                            )}
+                          </td>
+                          <td className="td">
+                            {hm(d.worked_min)}
+                            {d.overtime_min > 0 && (
+                              <span className="text-[10px] text-amber-600 mr-1">
+                                (+{hm(d.overtime_min)} إضافي)
+                              </span>
+                            )}
+                          </td>
+                          <td className="td">
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${cls}`}>
+                              {label}
+                            </span>
+                          </td>
+                          <td className="td">
+                            <button
+                              className="btn-ghost !py-0.5 !px-2 text-xs"
+                              onClick={() => {
+                                setEditingDate(d.date);
+                                setEditing(row);
+                              }}
+                              title="تعديل هذا اليوم"
+                            >
+                              ✏️ تعديل
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Modal>
       )}
 
       {/* نافذة «يوم بدل»: إسناد عطلة تعويضية عن دوام في عطلة رسمية */}
