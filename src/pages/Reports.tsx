@@ -82,6 +82,18 @@ const dailyStatus = (r: DailyRow): string => {
 
 const statKinds: ReportKey[] = ["absence", "late", "overtime", "leaves"];
 
+const MONTH_OPTIONS_REP = (() => {
+  const out: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = -24; i <= 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push({ value: `${y}-${m}`, label: `${m} ${y}` });
+  }
+  return out;
+})();
+
 export default function Reports({ toast }: { toast: Toast }) {
   const { today: todayIso, month, rolledFrom } = useToday();
   const [kind, setKind] = useState<ReportKey>("payroll");
@@ -249,12 +261,17 @@ export default function Reports({ toast }: { toast: Toast }) {
               >
                 ‹
               </button>
-              <input
-                type="month"
+              <select
                 className="input !w-44"
                 value={period}
                 onChange={(e) => e.target.value && setPeriod(e.target.value)}
-              />
+              >
+                {MONTH_OPTIONS_REP.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
               <button
                 className="btn-ghost !px-2.5 !py-1.5 text-lg font-bold leading-none disabled:opacity-30"
                 onClick={() => shiftMonth(1)}

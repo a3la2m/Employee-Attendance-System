@@ -17,7 +17,7 @@ import type { AttendanceDay, DailyRow, Employee, Settings, Holiday } from "../li
 import Modal from "../components/Modal";
 import { TableSkeleton } from "../components/Skeleton";
 import { useToday, monthLocal } from "../lib/useToday";
-import { leaveLabel, workedOnHoliday } from "../lib/labels";
+import { leaveLabel, workedOnHoliday, dayStatusInfo } from "../lib/labels";
 
 type Toast = (m: string, t?: "ok" | "err") => void;
 
@@ -26,6 +26,21 @@ function hm(min: number) {
   const m = min % 60;
   return `${h}س ${String(m).padStart(2, "0")}د`;
 }
+
+const MONTH_OPTIONS_ATT = (() => {
+  const out: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = -24; i <= 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push({ value: `${y}-${m}`, label: `${m} ${y}` });
+  }
+  return out;
+})();
+
+const hhmm = (iso: string | null) =>
+  iso ? (iso.split("T")[1] || "").slice(0, 5) || "—" : "—";
 
 function tfmt(iso: string | null) {
   if (!iso) return "—";
@@ -74,6 +89,7 @@ export default function Attendance({
   const [loadingD, setLoadingD] = useState(true);
   const [emps, setEmps] = useState<Employee[]>([]);
   const [editing, setEditing] = useState<DailyRow | null>(null);
+  const [editingDate, setEditingDate] = useState<string>("");
   const [compOff, setCompOff] = useState<DailyRow | null>(null);
   // يوم دوام في عطلة رسمية تُعرض له تفاصيل التعويض (زر ⓘ)
   const [infoDay, setInfoDay] = useState<{
@@ -84,6 +100,7 @@ export default function Attendance({
   const [choiceBusy, setChoiceBusy] = useState<number | null>(null);
   const [cfg, setCfg] = useState<Settings>({});
   const [holidays, setHolidays] = useState<Holiday[]>([]);
+  const [selectedEmpId, setSelectedEmpId] = useState<number | "">("");
   // طلب مُعلَّق من تنبيه «يوم بدل»: ننتظر تحميل التقرير اليومي ثم نفتح النافذة
   const [pendingComp, setPendingComp] = useState<{ date: string; employeeId?: number } | null>(
     null,
@@ -256,12 +273,17 @@ export default function Attendance({
             >
               ‹
             </button>
-            <input
-              type="month"
+            <select
               className="input !w-44"
               value={period}
               onChange={(e) => e.target.value && setPeriod(e.target.value)}
-            />
+            >
+              {MONTH_OPTIONS_ATT.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
             <button
               className="btn-ghost !px-2.5 !py-1.5 text-lg font-bold leading-none disabled:opacity-30"
               onClick={() => shiftMonth(1)}
@@ -656,11 +678,137 @@ export default function Attendance({
         </div>
       </div>
 
+      {/* ===== عرض/تعديل حضور موظف في فترة معيّنة ===== */}
+      <div className="card space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-bold">✏️ عرض وتعديل حضور موظف في فترة معيّنة</h2>
+            <div className="text-xs text-slate-500">
+              اختر موظفاً والشهر (أعلاه) لعرض أيامه — اضغط ✏️ على أي يوم لتعديله
+              (ضبط أوقات / غياب / تلقائي).
+            </div>
+          </div>
+          <select
+            className="input !w-72"
+            value={selectedEmpId}
+            onChange={(e) =>
+              setSelectedEmpId(e.target.value === "" ? "" : Number(e.target.value))
+            }
+          >
+            <option value="">— اختر موظفاً —</option>
+            {emps.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}{e.pin ? ` (#${e.pin})` : ""}{e.active ? "" : " — موقوف"}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {selectedEmpId !== "" && (
+          <div className="overflow-auto max-h-[32rem]">
+            <table className="w-full">
+              <thead className="sticky top-0">
+                <tr>
+                  <th className="th">التاريخ</th>
+                  <th className="th">اليوم</th>
+                  <th className="th">الحضور</th>
+                  <th className="th">الانصراف</th>
+                  <th className="th">الساعات</th>
+                  <th className="th">الحالة</th>
+                  <th className="th">تعديل</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const rows = days.filter(
+                    (d) => d.employee_id === Number(selectedEmpId),
+                  );
+                  if (rows.length === 0) {
+                    return (
+                      <tr>
+                        <td className="td text-center text-slate-400 py-6" colSpan={7}>
+                          لا توجد أيام محسوبة لهذا الموظف في هذا الشهر.
+                        </td>
+                      </tr>
+                    );
+                  }
+                  const emp = emps.find((e) => e.id === Number(selectedEmpId));
+                  return rows.map((d) => {
+                    const wd = ["أحد","إثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][new Date(d.date + "T00:00:00").getDay()];
+                    const [label, cls] = dayStatusInfo(d);
+                    const row: DailyRow = {
+                      id: d.id,
+                      employee_id: d.employee_id,
+                      name: emp?.name ?? `#${d.employee_id}`,
+                      pin: emp?.pin ?? "",
+                      first_in: d.first_in,
+                      last_out: d.last_out,
+                      worked_min: d.worked_min,
+                      late_min: d.late_min,
+                      early_leave_min: d.early_leave_min,
+                      overtime_min: d.overtime_min,
+                      absent: d.absent,
+                      status: d.status,
+                      manual: d.manual,
+                      leave_type: d.leave_type,
+                      leave_paid: d.leave_paid,
+                      holiday: d.holiday,
+                      no_break: d.no_break,
+                      no_meal: d.no_meal,
+                    };
+                    return (
+                      <tr key={d.id} className="hover:bg-slate-50">
+                        <td className="td font-mono text-right">{d.date}</td>
+                        <td className="td">{wd}</td>
+                        <td className="td font-mono">{hhmm(d.first_in)}</td>
+                        <td className="td font-mono">
+                          {hhmm(d.last_out)}
+                          {d.last_out && d.last_out.slice(0, 10) !== d.date && (
+                            <div className="text-[10px] text-slate-400">
+                              {d.last_out.slice(0, 10)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="td">
+                          {hm(d.worked_min)}
+                          {d.overtime_min > 0 && (
+                            <span className="text-[10px] text-amber-600 mr-1">
+                              (+{hm(d.overtime_min)} إضافي)
+                            </span>
+                          )}
+                        </td>
+                        <td className="td">
+                          <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${cls}`}>
+                            {label}
+                          </span>
+                        </td>
+                        <td className="td">
+                          <button
+                            className="btn-ghost !py-0.5 !px-2 text-xs"
+                            onClick={() => {
+                              setEditingDate(d.date);
+                              setEditing(row);
+                            }}
+                            title="تعديل هذا اليوم"
+                          >
+                            ✏️ تعديل
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* نافذة التعديل اليدوي */}
       {editing && (
         <EditDayModal
           row={editing}
-          date={dailyDate}
+          date={editingDate || dailyDate}
           balance={
             emps.find((e) => e.id === editing.employee_id)
               ?.annual_leave_balance ?? 0

@@ -27,6 +27,18 @@ const curPeriod = (): string => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
+const MONTH_OPTIONS_BOT = (() => {
+  const out: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = -12; i <= 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push({ value: `${y}-${m}`, label: `${m} ${y}` });
+  }
+  return out;
+})();
+
 export default function BotRequestsModal({
   onClose,
   toast,
@@ -534,8 +546,7 @@ export default function BotRequestsModal({
                             <label className="label !text-xs">
                               شهر بداية الخصم (YYYY-MM)
                             </label>
-                            <input
-                              type="month"
+                            <select
                               dir="ltr"
                               className="input !py-1.5 text-xs font-mono"
                               value={start}
@@ -545,7 +556,13 @@ export default function BotRequestsModal({
                                   [r.id]: e.target.value,
                                 })
                               }
-                            />
+                            >
+                              {MONTH_OPTIONS_BOT.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
                           </div>
                           {mode === "installments" && (
                             <div>

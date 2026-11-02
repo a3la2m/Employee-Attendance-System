@@ -77,6 +77,10 @@ export interface AttendanceDay {
   holiday?: boolean;
   /** خيار تعويض الدوام في العطلة: "money" (نقدي، افتراضي) أو "comp" (يوم بدل). */
   holiday_work_choice?: string | null;
+  /** مُلغي خصم الاستراحة لهذا اليوم. */
+  no_break?: boolean;
+  /** مُزاع بدل الفطور لهذا اليوم. */
+  no_meal?: boolean;
 }
 
 export interface PayrollResult {

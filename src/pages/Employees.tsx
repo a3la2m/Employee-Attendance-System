@@ -109,6 +109,18 @@ const curMonth = (): [string, string] => {
   return [`${y}-${m}-01`, `${y}-${m}-${String(last).padStart(2, "0")}`];
 };
 
+const MONTH_OPTIONS_EMP = (() => {
+  const out: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = -24; i <= 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    out.push({ value: `${y}-${m}`, label: `${m} ${y}` });
+  }
+  return out;
+})();
+
 export default function Employees({
   toast,
   focusAdvance,
@@ -1250,12 +1262,17 @@ export function AdvancesModal({
             <label className="label">
               {mode === "single" ? "شهر الخصم (الراتب)" : "أول شهر يبدأ فيه الخصم"}
             </label>
-            <input
-              type="month"
+            <select
               className="input"
               value={startPeriod}
               onChange={(e) => setStartPeriod(e.target.value)}
-            />
+            >
+              {MONTH_OPTIONS_EMP.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
