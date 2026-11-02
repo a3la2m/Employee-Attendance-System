@@ -47,6 +47,7 @@ pub fn compute_payroll(
     let mut overtime_min: i64 = 0;
     let mut paid_leave_days: i64 = 0;
     let mut unpaid_leave_days: i64 = 0;
+    let mut leave_pay: f64 = 0.0;
     let mut holiday_days: i64 = 0;
     let mut holiday_work_days: i64 = 0;
     let mut holiday_work_min: i64 = 0;
@@ -64,6 +65,9 @@ pub fn compute_payroll(
             // إجازة: لا ساعات ولا بدلات — تُعدّ للمعلومة ولبدل العطلة إن مدفوعة
             if d.leave_paid.unwrap_or(false) {
                 paid_leave_days += 1;
+                // إجازة مدفوعة (سنوية/مرضية): تُدفع ببدل الاجازه (weekend_allow)
+                // من الإعدادات — قيمَة اليوم المدفوع، كما يطلب المستخدم.
+                leave_pay += s.weekend_allow;
             } else {
                 unpaid_leave_days += 1;
             }
@@ -140,7 +144,7 @@ pub fn compute_payroll(
     let absence_deduction = 0.0;
 
     // 6) الصافي (شامل أجر العمل في العطلة وأجر أيام البدل)
-    let net_pay = base_pay + overtime_pay + allowances + weekend_pay + holiday_work_pay + comp_off_pay;
+    let net_pay = base_pay + overtime_pay + allowances + weekend_pay + holiday_work_pay + comp_off_pay + leave_pay;
 
     PayrollResult {
         employee_id: emp_id,
@@ -164,6 +168,7 @@ pub fn compute_payroll(
         holiday_work_pay,
         comp_off_days,
         comp_off_pay,
+        leave_pay,
         late_deduction,
         absence_deduction,
         advance_deduction: 0.0,

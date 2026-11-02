@@ -1784,8 +1784,8 @@ fn archive_payroll_impl(conn: &Connection, period: &str) -> Result<usize, String
     for r in rows {
         conn.execute(
             "INSERT INTO payroll_runs(period,employee_id,days_present,total_worked_hours,
-             overtime_hours,base_pay,allowances,weekend_pay,late_deduction,absence_deduction,advance_deduction,net_pay,generated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+             overtime_hours,base_pay,allowances,weekend_pay,late_deduction,absence_deduction,advance_deduction,leave_pay,net_pay,generated_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
              ON CONFLICT(period,employee_id) DO UPDATE SET
                days_present=excluded.days_present, total_worked_hours=excluded.total_worked_hours,
                overtime_hours=excluded.overtime_hours, base_pay=excluded.base_pay,
@@ -1793,6 +1793,7 @@ fn archive_payroll_impl(conn: &Connection, period: &str) -> Result<usize, String
                late_deduction=excluded.late_deduction,
                absence_deduction=excluded.absence_deduction,
                advance_deduction=excluded.advance_deduction,
+               leave_pay=excluded.leave_pay,
                net_pay=excluded.net_pay,
                generated_at=excluded.generated_at",
             rusqlite::params![
@@ -1807,6 +1808,7 @@ fn archive_payroll_impl(conn: &Connection, period: &str) -> Result<usize, String
                 r.late_deduction,
                 r.absence_deduction,
                 r.advance_deduction,
+                r.leave_pay,
                 r.net_pay,
                 now
             ],
@@ -6444,3 +6446,5 @@ mod payroll_check_mod {
         }
     }
 }
+
+

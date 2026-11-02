@@ -114,6 +114,8 @@ export interface PayrollResult {
   comp_off_days?: number;
   /** أجر أيام البدل التعويضية (62 عن كل يوم). */
   comp_off_pay?: number;
+  /** أجر الإجازات المدفوعة (بدل الاجازه × عدد أيام الإجازة المدفوعة). */
+  leave_pay?: number;
   late_deduction: number;
   absence_deduction: number;
   /** خصم السلفة (أو قسط السلفة) المستحق لهذا الموظف في هذه الفترة. */

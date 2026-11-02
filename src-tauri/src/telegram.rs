@@ -2824,10 +2824,10 @@ fn salary_text(
         .unwrap_or_default();
     let cur = currency(s);
     let ot_mult = s.get("overtime_rate_mult").and_then(|v| v.parse::<f64>().ok()).unwrap_or(1.5);
-    let snap: Option<(i64, f64, f64, f64, f64, f64, f64)> = conn
+    let snap: Option<(i64, f64, f64, f64, f64, f64, f64, f64)> = conn
         .query_row(
             "SELECT days_present,total_worked_hours,overtime_hours,base_pay,
-                    allowances,weekend_pay,advance_deduction
+                    allowances,weekend_pay,advance_deduction,leave_pay
              FROM payroll_runs WHERE period=?1 AND employee_id=?2",
             params![period, emp_id],
             |r| {
@@ -2839,6 +2839,7 @@ fn salary_text(
                     r.get(4)?,
                     r.get(5)?,
                     r.get(6)?,
+                    r.get(7).unwrap_or(0.0),
                 ))
             },
         )
@@ -2850,7 +2851,7 @@ fn salary_text(
         &paid_at[..paid_at.len().min(10)],
         nm = name.trim()
     );
-    if let Some((days, hours, ot, base, allow, weekend, adv)) = snap {
+    if let Some((days, hours, ot, base, allow, weekend, adv, leave_pay)) = snap {
         out.push_str(&format!("\n{SEP}\n🧾 التفاصيل:"));
         out.push_str(&format!("\n{DOT} أيام الحضور: {days}"));
         out.push_str(&format!("\n{DOT} الساعات العادية: {hours:.1}"));
@@ -2859,6 +2860,9 @@ fn salary_text(
         out.push_str(&format!("\n{DOT} الأساسي: {base:.2} {cur}"));
         out.push_str(&format!("\n{DOT} البدلات: {allow:.2} {cur}"));
         out.push_str(&format!("\n{DOT} بدل العطلة: {weekend:.2} {cur}"));
+        if leave_pay > 0.0 {
+            out.push_str(&format!("\n{DOT} إجازات مدفوعة: {leave_pay:.2} {cur}"));
+        }
         if adv > 0.0 {
             out.push_str(&format!("\n{DOT} خصم السلفة: − {adv:.2} {cur}"));
         }

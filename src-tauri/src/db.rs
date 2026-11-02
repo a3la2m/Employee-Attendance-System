@@ -315,6 +315,8 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     migrate_column(conn, "payslip_snapshots", "sheet", "TEXT")?;
     migrate_column(conn, "payslip_snapshots", "advance_deduction", "REAL NOT NULL DEFAULT 0")?;
     migrate_column(conn, "payroll_runs", "advance_deduction", "REAL NOT NULL DEFAULT 0")?;
+    // أجر الإجازات المدفوعة (بدل الاجازه × عدد أيام الإجازة المدفوعة)
+    migrate_column(conn, "payroll_runs", "leave_pay", "REAL NOT NULL DEFAULT 0")?;
     // هل يُسمح للموظف باستخدام بوت تلجرام؟ (1 افتراضياً — يُمنع يدوياً)
     migrate_column(conn, "employees", "bot_allowed", "INTEGER NOT NULL DEFAULT 1")?;
     // ربط الموظف ببوت تلجرام (يُملأ عندما يشارك رقم هاتفه مع البوت)

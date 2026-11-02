@@ -2252,6 +2252,16 @@ export function SlipSheet({
                         </td>
                       </tr>
                     )}
+                    {(sel.leave_pay ?? 0) > 0 && (
+                      <tr>
+                        <td className="text-right">
+                          إجازات مدفوعة ({sel.paid_leave_days} يوم × بدل الاجازه)
+                        </td>
+                        <td className="text-emerald-600">
+                          + {n(sel.leave_pay ?? 0)} {curSym}
+                        </td>
+                      </tr>
+                    )}
                     <tr className="total-row">
                       <td className="text-right">إجمالي الاستحقاقات</td>
                       <td>{n(grossNet)} {curSym}</td>
