@@ -126,29 +126,45 @@ fn notify_tick(app: &tauri::AppHandle) {
 
         let now_min = now.hour() as i64 * 60 + now.minute() as i64;
 
+        // هل جهاز البصمة غير متاح؟ (آخر مزامنة فشلت) — في هذه الحالة لا نرسل
+        // تنبيهات تأخر/غياب (لا بيانات حديثة)، وsync_once يرسل إشعار «غير متاح».
+        let device_unreachable = s
+            .get("device_unreachable")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
         // 0) تنبيهات الشفت (رسالة الموظف على تلجرام) — تُفحص أولاً لأنها تملك
         //    تنبيه «غياب» نفسه: أول من يحفظه يمنع تكراره.
-        alerts = commands::shift_alerts_due(
-            &conn,
-            &today,
-            now_min,
-            s.get("tg_alert_start").map(|v| v != "0").unwrap_or(true),
-            s.get("tg_alert_end").map(|v| v != "0").unwrap_or(true),
-        );
+        alerts = if device_unreachable {
+            Vec::new()
+        } else {
+            commands::shift_alerts_due(
+                &conn,
+                &today,
+                now_min,
+                s.get("tg_alert_start").map(|v| v != "0").unwrap_or(true),
+                s.get("tg_alert_end").map(|v| v != "0").unwrap_or(true),
+            )
+        };
 
         // 1) الأحداث الناقصة → تُفحص لكل موظف بعد بداية شفته بـ 15 دقيقة
-        fresh = commands::detect_missing_events_at(&conn, &today, Some(now_min));
+        fresh = if device_unreachable {
+            Vec::new()
+        } else {
+            commands::detect_missing_events_at(&conn, &today, Some(now_min))
+        };
 
         // 2) تنبيه التأخير — لكل موظف حسب شفته (بعد بداية الدوام بـ 15 دقيقة)،
         //    ويُحفظ في السجل مرة واحدة لكل موظف في اليوم.
-        lates = if s
+        lates = if device_unreachable || s
             .get("late_notify_enabled")
             .map(|v| v != "0")
             .unwrap_or(true)
+            == false
         {
-            commands::lates_due_today(&conn, &today, now_min)
-        } else {
             Vec::new()
+        } else {
+            commands::lates_due_today(&conn, &today, now_min)
         };
 
         // 4) الإضافة التلقائية لأرصدة الإجازات السنوية — مرة واحدة يومياً
@@ -217,6 +233,10 @@ fn sync_once(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     match commands::sync_device_internal(&state) {
         Ok(v) => {
+            // الاتصال بالجهاز نجح — ألغِ حالة «غير متاح»
+            if let Ok(conn) = state.db.lock() {
+                let _ = db::set_setting(&conn, "device_unreachable", "0");
+            }
             let new_punches = v.get("new_punches").and_then(|x| x.as_i64()).unwrap_or(0);
             if new_punches > 0 {
                 let _ = app.emit(
@@ -256,7 +276,28 @@ fn sync_once(app: &tauri::AppHandle) {
         Err(e) => {
             log::warn!("auto sync failed: {e}");
             let _ = app.emit("sync", serde_json::json!({"ok": false, "error": e}));
-            // إشعار واحد عند فقد الاتصال بالجهاز، وآخر عند عودته (يتم تتبعه داخل sync_device_internal لاحقاً)
+            // هل كانت الحالة «غير متاح» مسبقاً؟ (لإرسال الإشعار عند الانتقال فقط)
+            let was_unreachable = {
+                if let Ok(conn) = state.db.lock() {
+                    db::all_settings(&conn)
+                        .ok()
+                        .and_then(|s| s.get("device_unreachable").cloned())
+                        .unwrap_or_default()
+                        == "1"
+                } else {
+                    false
+                }
+            };
+            if let Ok(conn) = state.db.lock() {
+                let _ = db::set_setting(&conn, "device_unreachable", "1");
+            }
+            if !was_unreachable {
+                // انتقال 0→1: أرسل إشعاراً (سطح المكتب + تلجرام) مرة واحدة
+                use tauri_plugin_notification::NotificationExt;
+                let msg = format!("⚠️ تعذّر الاتصال بجهاز البصمة — {e}\n\nلن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال.");
+                let _ = app.notification().builder().title("⚠️ جهاز البصمة غير متاح").body(&msg).show();
+                crate::telegram::notify_supervisors_gated(app, "⚠️ جهاز البصمة غير متاح", &msg, Some("tg_sup_alerts"));
+            }
         }
     }
 }

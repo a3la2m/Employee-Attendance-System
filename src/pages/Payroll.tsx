@@ -21,6 +21,7 @@ import type {
   AttendanceDay,
   Employee,
   Settings,
+  DailyRow,
   PayslipSnapshot,
   SalaryPayment,
 } from "../lib/types";
@@ -29,6 +30,7 @@ import { printCss, hhmm, hrs, todayISO } from "../lib/print";
 import { useToday, monthLocal } from "../lib/useToday";
 import { dayStatusInfo } from "../lib/labels";
 import Modal from "../components/Modal";
+import { EditDayModal } from "./Attendance";
 import {
   readSlipCfg,
   slipToSettings,
@@ -99,6 +101,11 @@ export default function Payroll({ toast }: { toast: Toast }) {
   const [days, setDays] = useState<AttendanceDay[]>([]);
   const [slipOpen, setSlipOpen] = useState(false);
   const [slipSettingsOpen, setSlipSettingsOpen] = useState(false);
+  const [payrollAttOpen, setPayrollAttOpen] = useState(false);
+  const [payrollAttDays, setPayrollAttDays] = useState<AttendanceDay[]>([]);
+  const [payrollAttLoading, setPayrollAttLoading] = useState(false);
+  const [payrollEditing, setPayrollEditing] = useState<DailyRow | null>(null);
+  const [payrollEditingDate, setPayrollEditingDate] = useState<string>("");
   // سجل رواتب موظف بعينه (يُحفظ تلقائياً عند تعليم الراتب مدفوعاً)
   const [histOpen, setHistOpen] = useState(false);
   const [hist, setHist] = useState<EmployeePayrollRun[]>([]);
@@ -462,6 +469,24 @@ export default function Payroll({ toast }: { toast: Toast }) {
 
   // إعدادات التقسيم: المسودة غير المحفوظة إن وُجدت، وإلا المحفوظة في settings
   const slipCfg = slipDraft ?? readSlipCfg(cfg);
+
+  const loadPayrollAtt = async () => {
+    if (!payrollAttOpen || selId === "") return;
+    setPayrollAttLoading(true);
+    try {
+      const all = await getMonthDays(period);
+      setPayrollAttDays(all.filter((d) => d.employee_id === Number(selId)));
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setPayrollAttLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPayrollAtt();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payrollAttOpen, selId, period]);
 
   /** تعديل رقمي في المسودة (حقل فارغ أو خاطئ → صفر). */
   const setSlipNum = (k: keyof SlipCfg, v: string) => {
@@ -894,6 +919,15 @@ export default function Payroll({ toast }: { toast: Toast }) {
         >
           👁️ عرض القسيمة
         </button>
+        {selId !== "" && (
+          <button
+            className="btn-ghost"
+            onClick={() => setPayrollAttOpen(true)}
+            title="عرض وتعديل حضور الموظف المحدّد في هذه الفترة"
+          >
+            ✏️ تعديل الحضور
+          </button>
+        )}
         {selId !== "" && (
           <button className="btn-ghost" onClick={() => setSelId("")}>
             ✕ عرض الكل
@@ -1866,6 +1900,128 @@ export default function Payroll({ toast }: { toast: Toast }) {
             </div>
           </div>
         </div>
+      )}
+          {payrollAttOpen && (
+        <Modal
+          onClose={() => setPayrollAttOpen(false)}
+          title="📋 عرض وتعديل حضور موظف (الفترة والموظف محدّدان)"
+          panelClass="max-w-5xl"
+        >
+          <div className="space-y-4">
+            <div className="text-xs text-slate-500">
+              الموظف: <b>{emps.find((e) => e.id === selId)?.name ?? `#${selId}`}</b> ·
+              الفترة: <b>{period}</b>
+            </div>
+            {payrollAttLoading ? (
+              <div className="text-center text-slate-400 py-8">جارٍ التحميل…</div>
+            ) : payrollAttDays.length === 0 ? (
+              <div className="text-center text-slate-400 py-8">
+                لا توجد أيام محسوبة لهذا الموظف في هذه الفترة.
+              </div>
+            ) : (
+              <div className="overflow-auto max-h-[60vh]">
+                <table className="w-full">
+                  <thead className="sticky top-0">
+                    <tr>
+                      <th className="th">التاريخ</th>
+                      <th className="th">اليوم</th>
+                      <th className="th">الحضور</th>
+                      <th className="th">الانصراف</th>
+                      <th className="th">الساعات</th>
+                      <th className="th">الحالة</th>
+                      <th className="th">تعديل</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {payrollAttDays.map((d) => {
+                      const wd = ["أحد","إثنين","ثلاثاء","أربعاء","خميس","جمعة","سبت"][
+                        new Date(d.date + "T00:00:00").getDay()
+                      ];
+                      const [label, cls] = dayStatusInfo(d);
+                      const emp = emps.find((e) => e.id === d.employee_id);
+                      const row: DailyRow = {
+                        id: d.id,
+                        employee_id: d.employee_id,
+                        name: emp?.name ?? `#${d.employee_id}`,
+                        pin: emp?.pin ?? "",
+                        first_in: d.first_in,
+                        last_out: d.last_out,
+                        worked_min: d.worked_min,
+                        late_min: d.late_min,
+                        early_leave_min: d.early_leave_min,
+                        overtime_min: d.overtime_min,
+                        absent: d.absent,
+                        status: d.status,
+                        manual: d.manual,
+                        leave_type: d.leave_type,
+                        leave_paid: d.leave_paid,
+                        holiday: d.holiday,
+                        no_break: d.no_break,
+                        no_meal: d.no_meal,
+                      };
+                      return (
+                        <tr key={d.id} className="hover:bg-slate-50">
+                          <td className="td font-mono text-right">{d.date}</td>
+                          <td className="td">{wd}</td>
+                          <td className="td font-mono">{hhmm(d.first_in)}</td>
+                          <td className="td font-mono">
+                            {hhmm(d.last_out)}
+                            {d.last_out && d.last_out.slice(0, 10) !== d.date && (
+                              <div className="text-[10px] text-slate-400">
+                                {d.last_out.slice(0, 10)}
+                              </div>
+                            )}
+                          </td>
+                          <td className="td">
+                            {hrs(d.worked_min)}
+                            {d.overtime_min > 0 && (
+                              <span className="text-[10px] text-amber-600 mr-1">
+                                (+{hrs(d.overtime_min)} إضافي)
+                              </span>
+                            )}
+                          </td>
+                          <td className="td">
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${cls}`}>
+                              {label}
+                            </span>
+                          </td>
+                          <td className="td">
+                            <button
+                              className="btn-ghost !py-0.5 !px-2 text-xs"
+                              onClick={() => {
+                                setPayrollEditingDate(d.date);
+                                setPayrollEditing(row);
+                              }}
+                              title="تعديل هذا اليوم"
+                            >
+                              ✏️ تعديل
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+      {payrollEditing && (
+        <EditDayModal
+          row={payrollEditing}
+          date={payrollEditingDate || period + "-01"}
+          balance={
+            emps.find((e) => e.id === payrollEditing.employee_id)
+              ?.annual_leave_balance ?? 0
+          }
+          toast={toast}
+          onClose={() => setPayrollEditing(null)}
+          onSaved={() => {
+            loadPayrollAtt();
+            load();
+          }}
+        />
       )}
     </div>
   );
