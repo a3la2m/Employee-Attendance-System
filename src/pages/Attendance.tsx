@@ -979,7 +979,7 @@ export function EditDayModal({
           ? "حُوّل اليوم إلى إجازة سنوية — خُصم يوم من الرصيد ✅"
           : m === "sick"
             ? "حُوّل اليوم إلى إجازة مرضية (بلا خصم) ✅"
-            : "حُوّل اليوم إلى إجازة بدون أجر ✅",
+            : "حُوّل اليوم إلى إجازة بدون راتب ✅",
       );
       onSaved();
       onClose();
@@ -1138,9 +1138,9 @@ export function EditDayModal({
             )}
             onClick={() => convertLeave("unpaid")}
             disabled={busy}
-            title="إجازة بدون أجر — بلا خصم من الرصيد"
+            title="إجازة بدون راتب — بلا خصم من الرصيد"
           >
-            📄 بدون أجر
+            📄 بدون راتب
             <span className="text-[10px] font-normal opacity-70">بلا خصم</span>
           </button>
         </div>

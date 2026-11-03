@@ -2716,7 +2716,7 @@ fn remove_single_day_leave(
 /// - السنوية: تخصم يوماً من `annual_leave_balance` (تُرفض إن الرصيد < 1)،
 ///   وتُستعاد إذا كان في اليوم إجازة سنوية مدفوعة تُزال قبل الإنشاء.
 /// - المرضية: مدفوعة بلا خصم (كما في بطاقة الموظف).
-/// - بدون أجر: بلا خصم (تُعرض كإجازة سنوية غير مدفوعة في الرواتب).
+/// - بدون راتب: بلا خصم (تُعرض كإجازة بدون راتب في الرواتب).
 /// اليوم المغطّى بإجازة متعددة الأيام يُرفض برسالة تُحيل لشاشة الموظفين.
 fn convert_day_to_leave(
     state: &AppState,
@@ -2728,7 +2728,7 @@ fn convert_day_to_leave(
     let (leave_type, paid, deduct): (&str, bool, bool) = match kind {
         "annual" => ("annual", true, true),
         "sick" => ("sick", true, false),
-        _ => ("annual", false, false), // بدون أجر
+        _ => ("unpaid", false, false), // بدون راتب
     };
     {
         let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -2805,7 +2805,7 @@ fn convert_day_to_leave(
         let note = match kind {
             "annual" => "تحويل يوم إلى إجازة سنوية من شاشة الحضور",
             "sick" => "تحويل يوم إلى إجازة مرضية من شاشة الحضور",
-            _ => "تحويل يوم إلى إجازة بدون أجر من شاشة الحضور",
+            _ => "تحويل يوم إلى إجازة بدون راتب من شاشة الحضور",
         };
         let has_punches: i64 = conn
             .query_row(
@@ -5077,7 +5077,7 @@ mod tests {
         assert_eq!(balance_of(&state), 5.0, "بلا أجر بلا خصم");
         let (status, lty, paid) = day_status(&state);
         assert_eq!(status, "leave");
-        assert_eq!(lty.as_deref(), Some("annual"), "تُعرض للرواتب كسنوية");
+        assert_eq!(lty.as_deref(), Some("unpaid"), "تُعرض للرواتب كإجازة بدون راتب");
         assert_eq!(paid, Some(false));
 
         // إزالتها لا تستعيد شيئاً (لم يُخصم أصلاً)

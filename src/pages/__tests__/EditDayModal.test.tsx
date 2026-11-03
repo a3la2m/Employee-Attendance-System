@@ -53,9 +53,9 @@ describe("EditDayModal — تحويل اليوم إلى إجازة", () => {
     expect(setDayManual).toHaveBeenCalledWith(7, "2026-10-19", "sick", null, null);
   });
 
-  it("زر بدون أجر يحوّل اليوم بوضع unpaid", async () => {
+  it("زر بدون راتب يحوّل اليوم بوضع unpaid", async () => {
     renderModal(5);
-    await userEvent.click(screen.getByTitle(/إجازة بدون أجر/));
+    await userEvent.click(screen.getByTitle(/إجازة بدون راتب/));
     expect(setDayManual).toHaveBeenCalledWith(7, "2026-10-19", "unpaid", null, null);
   });
 
