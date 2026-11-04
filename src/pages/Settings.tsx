@@ -481,7 +481,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
       </div>
 
       {/* إعدادات الطباعة العامة */}
-      <div className="card border-indigo-200 bg-indigo-50/40">
+      <div className="card border-primary-200 bg-primary-50/40">
         <h2 className="font-bold mb-1">🖨️ إعدادات الطباعة (لكل التقارير)</h2>
         <p className="text-xs text-slate-500 mb-4 leading-relaxed">
           نصّا الرأس والتذييل يظهران في <b>كل</b> المطبوعات: التقارير الشهرية واليومية،
@@ -521,7 +521,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             type="checkbox"
             checked={(cfg.print_show_logo ?? "1") !== "0"}
             onChange={(e) => set("print_show_logo", e.target.checked ? "1" : "0")}
-            className="accent-indigo-600 w-4 h-4"
+            className="accent-primary-600 w-4 h-4"
           />
           إظهار شعار الشركة في رأس المطبوعات
         </label>
@@ -698,7 +698,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                   <td>{s.employee_count}</td>
                   <td>
                     {s.active ? (
-                      <span className="badge bg-emerald-100 text-emerald-700">مفعّلة</span>
+                      <span className="badge bg-success-100 text-success-700">مفعّلة</span>
                     ) : (
                       <span className="badge bg-slate-200 text-slate-600">مهجورة</span>
                     )}
@@ -814,7 +814,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                 type="checkbox"
                 checked={shiftForm.active}
                 onChange={(e) => setShiftForm({ ...shiftForm, active: e.target.checked })}
-                className="accent-indigo-600 w-4 h-4"
+                className="accent-primary-600 w-4 h-4"
               />
               مفعّلة (إلغاؤها يجعلها مهجورة)
             </label>
@@ -823,7 +823,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                 type="checkbox"
                 checked={shiftForm.is_default}
                 onChange={(e) => setShiftForm({ ...shiftForm, is_default: e.target.checked })}
-                className="accent-indigo-600 w-4 h-4"
+                className="accent-primary-600 w-4 h-4"
               />
               اجعلها الوردية الرئيسية
             </label>
@@ -887,7 +887,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                 >
                   <input
                     type="checkbox"
-                    className="accent-indigo-600 w-4 h-4"
+                    className="accent-primary-600 w-4 h-4"
                     checked={picked.has(e.id)}
                     onChange={() => togglePicked(e.id)}
                   />
@@ -901,7 +901,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                     </span>
                   )}
                   {e.shift_id === assignShift.id && (
-                    <span className="text-[10px] text-emerald-600 mr-auto">مسنَد هنا</span>
+                    <span className="text-[10px] text-success-600 mr-auto">مسنَد هنا</span>
                   )}
                 </label>
               ))}
@@ -969,7 +969,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             type="checkbox"
             checked={(cfg.auto_fix_clock ?? "1") !== "0"}
             onChange={(e) => set("auto_fix_clock", e.target.checked ? "1" : "0")}
-            className="accent-indigo-600 w-4 h-4"
+            className="accent-primary-600 w-4 h-4"
           />
           تصحيح ساعة الجهاز تلقائياً عند اختلافها عن ساعة النظام
         </label>
@@ -979,7 +979,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             type="checkbox"
             checked={(cfg.deduct_break ?? "1") !== "0"}
             onChange={(e) => set("deduct_break", e.target.checked ? "1" : "0")}
-            className="accent-indigo-600 w-4 h-4"
+            className="accent-primary-600 w-4 h-4"
           />
           خصم الاستراحة من الدوام (30 دقيقة تُخصم دائماً حتى لو دُوّم أقل ساعات)
         </label>
@@ -1012,7 +1012,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
                 onChange={(e) =>
                   set("late_notify_enabled", e.target.checked ? "1" : "0")
                 }
-                className="accent-indigo-600 w-4 h-4"
+                className="accent-primary-600 w-4 h-4"
               />
               تفعيل تنبيهات التأخير والدوام (بعد بداية الشفت بـ 15 دقيقة)
             </label>
@@ -1098,7 +1098,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
               onChange={(e) =>
                 set("leave_accrual_enabled", e.target.checked ? "1" : "0")
               }
-              className="accent-indigo-600 w-4 h-4"
+              className="accent-primary-600 w-4 h-4"
             />
             تفعيل الإضافة التلقائية
           </label>
@@ -1126,7 +1126,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
             checked={autostart}
             disabled={autostartBusy}
             onChange={toggleAutostart}
-            className="accent-indigo-600 w-4 h-4"
+            className="accent-primary-600 w-4 h-4"
           />
           بدء تشغيل التطبيق تلقائياً مع تشغيل النظام
         </label>

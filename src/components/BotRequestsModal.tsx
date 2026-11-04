@@ -205,7 +205,7 @@ export default function BotRequestsModal({
               onClick={() => setTab("leaves")}
               className={`px-3.5 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition ${
                 tab === "leaves"
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-primary-600 text-white"
                   : "bg-slate-100 text-slate-700 hover:bg-slate-200"
               }`}
             >
@@ -214,7 +214,7 @@ export default function BotRequestsModal({
                 <span
                   className={`px-1.5 py-0.5 rounded-full text-xs font-extrabold ${
                     tab === "leaves"
-                      ? "bg-white text-indigo-700"
+                      ? "bg-white text-primary-700"
                       : "bg-rose-500 text-white"
                   }`}
                 >
@@ -227,7 +227,7 @@ export default function BotRequestsModal({
               onClick={() => setTab("advances")}
               className={`px-3.5 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition ${
                 tab === "advances"
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-primary-600 text-white"
                   : "bg-slate-100 text-slate-700 hover:bg-slate-200"
               }`}
             >
@@ -236,7 +236,7 @@ export default function BotRequestsModal({
                 <span
                   className={`px-1.5 py-0.5 rounded-full text-xs font-extrabold ${
                     tab === "advances"
-                      ? "bg-white text-indigo-700"
+                      ? "bg-white text-primary-700"
                       : "bg-rose-500 text-white"
                   }`}
                 >
@@ -252,7 +252,7 @@ export default function BotRequestsModal({
                 type="checkbox"
                 checked={onlyPending}
                 onChange={(e) => setOnlyPending(e.target.checked)}
-                className="accent-indigo-600"
+                className="accent-primary-600"
               />
               عرض الطلبات المعلقة فقط
             </label>
@@ -285,7 +285,7 @@ export default function BotRequestsModal({
                     key={r.id}
                     className={`rounded-xl border p-4 space-y-3 ${
                       isPending
-                        ? "border-indigo-200 bg-indigo-50/30"
+                        ? "border-primary-200 bg-primary-50/30"
                         : "border-slate-200 bg-white"
                     }`}
                   >
@@ -295,13 +295,13 @@ export default function BotRequestsModal({
                           <span className="font-extrabold text-base">
                             {r.employee_name}
                           </span>
-                          <span className="badge bg-indigo-100 text-indigo-800 font-bold">
+                          <span className="badge bg-primary-100 text-primary-800 font-bold">
                             {LEAVE_TYPE_NAMES[r.leave_type] ?? r.leave_type}
                           </span>
                           <span
                             className={`badge ${
                               paidVal
-                                ? "bg-emerald-100 text-emerald-700"
+                                ? "bg-success-100 text-success-700"
                                 : "bg-slate-200 text-slate-700"
                             }`}
                           >
@@ -334,7 +334,7 @@ export default function BotRequestsModal({
                             ⏳ قيد المراجعة
                           </span>
                         ) : r.status === "approved" ? (
-                          <span className="badge bg-emerald-100 text-emerald-700 font-bold">
+                          <span className="badge bg-success-100 text-success-700 font-bold">
                             ✅ مقبول
                           </span>
                         ) : (
@@ -371,7 +371,7 @@ export default function BotRequestsModal({
                           </div>
                           <button
                             type="button"
-                            className="text-xs text-indigo-600 hover:underline font-bold mt-1"
+                            className="text-xs text-primary-600 hover:underline font-bold mt-1"
                             onClick={() =>
                               setPreviewImg({
                                 src: r.attachment_data!,
@@ -387,7 +387,7 @@ export default function BotRequestsModal({
 
                     {/* أزرار القبول والرفض للطلبات المعلقة */}
                     {isPending ? (
-                      <div className="pt-2 border-t border-indigo-100 flex flex-wrap items-end gap-3">
+                      <div className="pt-2 border-t border-primary-100 flex flex-wrap items-end gap-3">
                         <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 mb-2">
                           <input
                             type="checkbox"
@@ -398,7 +398,7 @@ export default function BotRequestsModal({
                                 [r.id]: e.target.checked,
                               })
                             }
-                            className="accent-emerald-600"
+                            className="accent-success-600"
                           />
                           إجازة مدفوعة الأجر
                         </label>
@@ -414,7 +414,7 @@ export default function BotRequestsModal({
                         </div>
                         <button
                           type="button"
-                          className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                          className="px-3.5 py-1.5 rounded-lg bg-success-600 hover:bg-success-700 text-white text-xs font-bold"
                           onClick={() => handleLeaveDecision(r, true)}
                           disabled={busy}
                         >
@@ -488,7 +488,7 @@ export default function BotRequestsModal({
                         {isPending && onOpenEmployeeAdvance && (
                           <button
                             type="button"
-                            className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold"
+                            className="px-2.5 py-1 rounded-lg bg-primary-50 hover:bg-primary-100 text-primary-700 border border-primary-200 text-xs font-bold"
                             onClick={() => onOpenEmployeeAdvance(r)}
                             title="فتح نافذة السلف الخاصة بالموظف في شاشة الموظفين مع تعبئة بيانات الطلب"
                           >
@@ -500,7 +500,7 @@ export default function BotRequestsModal({
                             ⏳ قيد المراجعة
                           </span>
                         ) : r.status === "approved" ? (
-                          <span className="badge bg-emerald-100 text-emerald-700 font-bold">
+                          <span className="badge bg-success-100 text-success-700 font-bold">
                             ✅ معتمد
                           </span>
                         ) : (
@@ -604,7 +604,7 @@ export default function BotRequestsModal({
                           />
                           <button
                             type="button"
-                            className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                            className="px-3.5 py-1.5 rounded-lg bg-success-600 hover:bg-success-700 text-white text-xs font-bold"
                             onClick={() => handleAdvanceDecision(r, true)}
                             disabled={busy}
                           >

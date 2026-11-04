@@ -434,7 +434,7 @@ export default function Attendance({
                     </td>
                     <td className="td">
                       {r.overtime_min ? (
-                        <span className="text-emerald-600 font-bold">
+                        <span className="text-success-600 font-bold">
                           {hm(r.overtime_min)}
                         </span>
                       ) : (
@@ -470,7 +470,7 @@ export default function Attendance({
                           بصمة ناقصة
                         </span>
                       ) : (
-                        <span className="badge bg-emerald-100 text-emerald-700">
+                        <span className="badge bg-success-100 text-success-700">
                           حضور
                         </span>
                       )}
@@ -512,7 +512,7 @@ export default function Attendance({
                       )}
                       {ongoing && (
                         <span
-                          className="badge bg-emerald-50 text-emerald-700 mr-1"
+                          className="badge bg-success-50 text-success-700 mr-1"
                           title="الموظف في دوامه الآن (بصمة دخول بلا انصراف بعد)"
                         >
                           قيد العمل
@@ -520,7 +520,7 @@ export default function Attendance({
                       )}
                       {r.manual && (
                         <span
-                          className="badge bg-indigo-100 text-indigo-700 mr-1"
+                          className="badge bg-primary-100 text-primary-700 mr-1"
                           title="تعديل يدوي من المسؤول"
                         >
                           ✏️ يدوي
@@ -528,7 +528,7 @@ export default function Attendance({
                       )}
                       {r.no_break && (
                         <span
-                          className="badge bg-emerald-50 text-emerald-700 mr-1"
+                          className="badge bg-success-50 text-success-700 mr-1"
                           title="أُلغي خصم الاستراحة لهذا اليوم"
                         >
                           بلا استراحة
@@ -669,7 +669,7 @@ export default function Attendance({
                       </td>
                       <td className="td">
                         {ot ? (
-                          <span className="text-emerald-600 font-bold">{hm(ot)}</span>
+                          <span className="text-success-600 font-bold">{hm(ot)}</span>
                         ) : (
                           "—"
                         )}
@@ -1051,7 +1051,7 @@ export function EditDayModal({
             key={m}
             className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-sm ${
               mode === m
-                ? "border-indigo-400 bg-indigo-50 font-bold"
+                ? "border-primary-400 bg-primary-50 font-bold"
                 : "border-slate-200"
             }`}
           >
@@ -1060,7 +1060,7 @@ export function EditDayModal({
               name="day-mode"
               checked={mode === m}
               onChange={() => setMode(m)}
-              className="accent-indigo-600"
+              className="accent-primary-600"
             />
             {l}
           </label>
@@ -1135,7 +1135,7 @@ export function EditDayModal({
           <button
             type="button"
             className={leaveBtn(
-              "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 disabled:opacity-40",
+              "border-success-200 bg-success-50 text-success-800 hover:bg-success-100 disabled:opacity-40",
             )}
             onClick={() => convertLeave("annual")}
             disabled={busy || balance < 1}
@@ -1175,7 +1175,7 @@ export function EditDayModal({
             onClick={() => toggleFlag("break")}
             className={`btn !py-1.5 !px-3 text-xs border ${
               noBreak
-                ? "bg-emerald-600 text-white hover:bg-emerald-700 border-emerald-600"
+                ? "bg-success-600 text-white hover:bg-success-700 border-success-600"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200"
             }`}
             title="لا تخصم الاستراحة القياسية (30 د) من هذا اليوم"

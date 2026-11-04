@@ -345,7 +345,7 @@ export default function App() {
                     key={n.id}
                     onClick={actionable ? () => gotoDay(n) : undefined}
                     className={`px-4 py-2.5 border-b border-slate-50 flex gap-3 ${
-                      n.seen ? "" : "bg-indigo-50"
+                      n.seen ? "" : "bg-primary-50"
                     } ${actionable ? "cursor-pointer hover:bg-sky-50" : ""}`}
                     title={
                       n.kind === "comp_off"
@@ -381,7 +381,7 @@ export default function App() {
               </div>
               <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 text-xs">
                 <button
-                  className="text-emerald-600 hover:underline font-bold"
+                  className="text-success-600 hover:underline font-bold"
                   onClick={() => {
                     setNotifs((ns) => ns.map((n) => ({ ...n, seen: true })));
                     markNotificationsSeen().catch(() => {});
@@ -420,7 +420,7 @@ export default function App() {
                 }
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition ${
                   active
-                    ? "bg-indigo-600 text-white font-bold"
+                    ? "bg-primary-600 text-white font-bold"
                     : locked
                       ? "text-slate-500 hover:bg-slate-800/60"
                       : "text-slate-300 hover:bg-slate-800"
@@ -431,7 +431,7 @@ export default function App() {
                 {n.key === "device" && deviceOk !== null && (
                   <span
                     className={`w-2.5 h-2.5 rounded-full ${
-                      deviceOk ? "bg-emerald-400" : "bg-rose-500"
+                      deviceOk ? "bg-success-400" : "bg-rose-500"
                     }`}
                     title={deviceOk ? "متصل بجهاز البصمة" : "مشكلة في الاتصال بجهاز البصمة"}
                   />

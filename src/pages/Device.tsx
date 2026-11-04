@@ -111,10 +111,10 @@ export default function Device({ toast }: { toast: Toast }) {
       </div>
 
       {/* حالة الاتصال (بدون تأخير — تُحمَّل من الإعدادات) */}
-      <div className={`card flex items-center gap-4 ${deviceUnreachable ? "border-rose-300 bg-rose-50" : "border-emerald-300 bg-emerald-50"}`}>
+      <div className={`card flex items-center gap-4 ${deviceUnreachable ? "border-rose-300 bg-rose-50" : "border-success-300 bg-success-50"}`}>
         <span
           className={`w-4 h-4 rounded-full ${
-            deviceUnreachable ? "bg-rose-500" : "bg-emerald-500"
+            deviceUnreachable ? "bg-rose-500" : "bg-success-500"
           } animate-pulse`}
         />
         <div className="flex-1">

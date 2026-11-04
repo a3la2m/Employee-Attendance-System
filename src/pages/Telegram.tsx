@@ -424,7 +424,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
             className={`px-3.5 py-2 rounded-lg font-bold text-sm transition ${
               enabled && token
                 ? "bg-rose-600 hover:bg-rose-700 text-white"
-                : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                : "bg-success-600 hover:bg-success-700 text-white"
             }`}
             title={
               enabled
@@ -447,7 +447,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
           <span
             className={`badge ${
               enabled && token
-                ? "bg-emerald-100 text-emerald-700"
+                ? "bg-success-100 text-success-700"
                 : "bg-slate-100 text-slate-500"
             }`}
           >
@@ -461,7 +461,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="font-extrabold text-lg">1) ربط البوت بالبرنامج</h2>
           {botName && (
-            <span className="badge bg-indigo-100 text-indigo-700">
+            <span className="badge bg-primary-100 text-primary-700">
               متصل: {botName}
             </span>
           )}
@@ -498,7 +498,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
               type="checkbox"
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
-              className="accent-indigo-600 w-4 h-4"
+              className="accent-primary-600 w-4 h-4"
             />
             تفعيل البوت (استقبال الرسائل وإرسال التنبيهات)
           </label>
@@ -507,7 +507,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
               type="checkbox"
               checked={alertStart}
               onChange={(e) => setAlertStart(e.target.checked)}
-              className="accent-indigo-600 w-4 h-4"
+              className="accent-primary-600 w-4 h-4"
             />
             تنبيه عدم تسجيل الدخول (بعد بداية الشفت بربع ساعة)
           </label>
@@ -516,7 +516,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
               type="checkbox"
               checked={alertEnd}
               onChange={(e) => setAlertEnd(e.target.checked)}
-              className="accent-indigo-600 w-4 h-4"
+              className="accent-primary-600 w-4 h-4"
             />
             تنبيه نهاية الشفت — الخروج المفقود (بعد نهاية الدوام بثلاث ساعات)
           </label>
@@ -564,7 +564,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                 type="checkbox"
                 checked={!!perms[p.key]}
                 onChange={(e) => togglePerm(p.key, e.target.checked)}
-                className="accent-indigo-600 w-4 h-4 mt-1"
+                className="accent-primary-600 w-4 h-4 mt-1"
               />
               <span className="flex-1">
                 <span className="block text-sm font-bold">{p.label}</span>
@@ -596,7 +596,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                 type="checkbox"
                 checked={!!supPerms[p.key]}
                 onChange={(e) => toggleSupPerm(p.key, e.target.checked)}
-                className="accent-indigo-600 w-4 h-4 mt-1"
+                className="accent-primary-600 w-4 h-4 mt-1"
               />
               <span className="flex-1">
                 <span className="block text-sm font-bold">{p.label}</span>
@@ -679,7 +679,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                     </td>
                     <td className="td">
                       {s.chat_id ? (
-                        <span className="badge bg-emerald-100 text-emerald-700">
+                        <span className="badge bg-success-100 text-success-700">
                           مرتبط
                         </span>
                       ) : (
@@ -772,7 +772,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                   </td>
                   <td className="td">
                     {l.chat_id ? (
-                      <span className="badge bg-emerald-100 text-emerald-700">
+                      <span className="badge bg-success-100 text-success-700">
                         مرتبط
                       </span>
                     ) : (
@@ -784,7 +784,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                   <td className="td">
                     <div className="flex items-center gap-2">
                       {l.bot_allowed ? (
-                        <span className="badge bg-emerald-100 text-emerald-700">
+                        <span className="badge bg-success-100 text-success-700">
                           مسموح
                         </span>
                       ) : (
@@ -796,7 +796,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                         className={`!px-2 !py-1 text-xs rounded-lg border font-bold ${
                           l.bot_allowed
                             ? "text-rose-700 border-rose-200 hover:bg-rose-50"
-                            : "text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+                            : "text-success-700 border-success-200 hover:bg-success-50"
                         }`}
                         onClick={() => toggleBotAllowed(l)}
                         title={
@@ -944,7 +944,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
           </li>
         </ol>
 
-        <div className="text-sm bg-indigo-50 border border-indigo-200 text-indigo-800 rounded-lg p-3">
+        <div className="text-sm bg-primary-50 border border-primary-200 text-primary-800 rounded-lg p-3">
           💡 لا حاجة لحفظ الأوامر: بعد ربط الحساب تظهر <b>أزرار جاهزة</b> أسفل
           المحادثة (دوام اليوم · كشف الشهر · شهر آخر · آخر راتب · رصيد الإجازات · طلب إجازة · طلب سلفة · سبب الغياب).
           زر «شهر آخر» يعرض الأشهر بالأرقام (مثل <bdi dir="ltr">10/2026</bdi>)
@@ -953,7 +953,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
 
         <div className="grid md:grid-cols-2 gap-3 text-sm">
           <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <div className="bg-indigo-50 text-indigo-800 font-bold px-3 py-2">
+            <div className="bg-primary-50 text-primary-800 font-bold px-3 py-2">
               أوامر الموظف
             </div>
             <ul className="divide-y divide-slate-100">
@@ -970,7 +970,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                 ["/مساعدة", "قائمة الأوامر"],
               ].map(([c, d]) => (
                 <li key={c} className="px-3 py-2 flex justify-between gap-2">
-                  <span dir="rtl" className="font-mono text-xs text-indigo-700">
+                  <span dir="rtl" className="font-mono text-xs text-primary-700">
                     {c}
                   </span>
                   <span className="text-slate-600">{d}</span>
@@ -979,7 +979,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
             </ul>
           </div>
           <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <div className="bg-emerald-50 text-emerald-800 font-bold px-3 py-2">
+            <div className="bg-success-50 text-success-800 font-bold px-3 py-2">
               أوامر المشرف
             </div>
             <ul className="divide-y divide-slate-100">
@@ -989,7 +989,7 @@ export default function Telegram({ toast }: { toast: Toast }) {
                 ["/الغاء", "إلغاء ربط المحادثة"],
               ].map(([c, d]) => (
                 <li key={c} className="px-3 py-2 flex justify-between gap-2">
-                  <span dir="rtl" className="font-mono text-xs text-emerald-700">
+                  <span dir="rtl" className="font-mono text-xs text-success-700">
                     {c}
                   </span>
                   <span className="text-slate-600">{d}</span>
@@ -1254,7 +1254,7 @@ function ChatLogModal({
               onClick={() => setEmpId("all")}
               className={`w-full text-right px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-between transition ${
                 empId === "all"
-                  ? "bg-indigo-600 text-white"
+                  ? "bg-primary-600 text-white"
                   : "hover:bg-slate-200/70 text-slate-700"
               }`}
             >
@@ -1279,7 +1279,7 @@ function ChatLogModal({
                   onClick={() => setEmpId(c.id)}
                   className={`w-full text-right px-3 py-2 rounded-lg text-xs transition ${
                     active
-                      ? "bg-indigo-600 text-white"
+                      ? "bg-primary-600 text-white"
                       : "hover:bg-slate-200/70 text-slate-800"
                   }`}
                 >
@@ -1298,7 +1298,7 @@ function ChatLogModal({
                   {c.phone && (
                     <div
                       className={`text-[10px] font-mono mt-0.5 ${
-                        active ? "text-indigo-100" : "text-slate-400"
+                        active ? "text-primary-100" : "text-slate-400"
                       }`}
                       dir="ltr"
                     >
@@ -1344,7 +1344,7 @@ function ChatLogModal({
                         className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 text-xs space-y-1.5 shadow-sm border ${
                           isIn
                             ? "bg-white border-slate-200 text-slate-800 rounded-tr-sm"
-                            : "bg-indigo-600 border-indigo-600 text-white rounded-tl-sm"
+                            : "bg-primary-600 border-primary-600 text-white rounded-tl-sm"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3 text-[10px] opacity-80">

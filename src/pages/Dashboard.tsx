@@ -90,8 +90,8 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
   );
 
   const cards = [
-    { label: "الموظفون النشطون", value: d?.employees ?? "—", icon: "👥", tone: "bg-indigo-50 text-indigo-600" },
-    { label: "الحاضرون اليوم", value: d?.present ?? "—", icon: "✅", tone: "bg-emerald-50 text-emerald-600" },
+    { label: "الموظفون النشطون", value: d?.employees ?? "—", icon: "👥", tone: "bg-primary-50 text-primary-600" },
+    { label: "الحاضرون اليوم", value: d?.present ?? "—", icon: "✅", tone: "bg-success-50 text-success-600" },
     { label: "الغائبون اليوم", value: d?.absent ?? "—", icon: "❌", tone: "bg-rose-50 text-rose-600" },
     { label: "إجمالي البصمات", value: d?.total_punches ?? "—", icon: "🗓️", tone: "bg-slate-100 text-slate-600" },
   ];
@@ -145,16 +145,16 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
             {present.map((p) => (
               <span
                 key={p.employee_id}
-                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-50 border border-emerald-200 text-sm"
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-success-50 border border-success-200 text-sm"
               >
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-success-500 animate-pulse" />
                 <span className="font-bold">{p.name}</span>
                 {p.pin && (
                   <span className="text-xs text-slate-400 font-mono">
                     #{p.pin}
                   </span>
                 )}
-                <span className="text-xs text-emerald-700 font-mono">
+                <span className="text-xs text-success-700 font-mono">
                   دخول {p.last_in.split("T").pop()?.slice(0, 5) || "—"}
                 </span>
               </span>
@@ -225,7 +225,7 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
               <div className="text-slate-500 text-xs">الفرق</div>
               <div
                 className={`font-bold ${
-                  tc.in_sync ? "text-emerald-600" : "text-rose-600"
+                  tc.in_sync ? "text-success-600" : "text-rose-600"
                 }`}
               >
                 {tc.in_sync ? "✅ متزامن" : `⚠️ ${tc.diff_minutes} دقيقة`}
@@ -410,7 +410,7 @@ function Charts({ data }: { data: DashboardCharts | null }) {
                   textAnchor="middle"
                   fontSize="10.5"
                   fontWeight={isToday ? 800 : 500}
-                  className={isToday ? "fill-indigo-600" : "fill-slate-500"}
+                  className={isToday ? "fill-primary-600" : "fill-slate-500"}
                 >
                   {d.label}
                 </text>
@@ -419,7 +419,7 @@ function Charts({ data }: { data: DashboardCharts | null }) {
                   y={H - padB + 27}
                   textAnchor="middle"
                   fontSize="8.5"
-                  className={isToday ? "fill-indigo-400" : "fill-slate-300"}
+                  className={isToday ? "fill-primary-400" : "fill-slate-300"}
                 >
                   {d.date.slice(8)}
                 </text>
@@ -524,7 +524,7 @@ function Charts({ data }: { data: DashboardCharts | null }) {
                   dir="ltr"
                 >
                   <div
-                    className="h-full rounded-full bg-gradient-to-l from-indigo-600 to-sky-400 flex items-center justify-end pr-2.5 text-[11px] text-white font-bold shadow-sm"
+                    className="h-full rounded-full bg-gradient-to-l from-primary-600 to-sky-400 flex items-center justify-end pr-2.5 text-[11px] text-white font-bold shadow-sm"
                     style={{
                       width: `${Math.max(10, (t.hours / maxTop) * 100)}%`,
                       transition: "width .6s ease",

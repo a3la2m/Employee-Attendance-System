@@ -47,8 +47,8 @@ export function dayStatusInfo(d: {
   if (d.status === "incomplete") return ["بصمة ناقصة", "bg-amber-100 text-amber-700"];
   if (d.first_in) {
     return d.last_out
-      ? ["حضور", "bg-emerald-100 text-emerald-700"]
-      : ["حضور (قيد العمل)", "bg-emerald-100 text-emerald-700"];
+      ? ["حضور", "bg-success-100 text-success-700"]
+      : ["حضور (قيد العمل)", "bg-success-100 text-success-700"];
   }
   return ["—", "text-slate-400"];
 }

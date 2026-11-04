@@ -17,7 +17,7 @@ export default function Toast({
   return (
     <div
       className={`fixed bottom-5 left-5 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium text-white animate-none ${
-        type === "ok" ? "bg-emerald-600" : "bg-rose-600"
+        type === "ok" ? "bg-success-600" : "bg-rose-600"
       }`}
       role="status"
     >

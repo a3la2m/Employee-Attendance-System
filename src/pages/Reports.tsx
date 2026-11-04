@@ -237,8 +237,8 @@ export default function Reports({ toast }: { toast: Toast }) {
               key={r.key}
               className={`px-3 py-1.5 rounded-full text-sm font-bold border transition ${
                 kind === r.key
-                  ? "bg-indigo-600 text-white border-indigo-600"
-                  : "bg-white border-slate-300 text-slate-600 hover:border-indigo-400"
+                  ? "bg-primary-600 text-white border-primary-600"
+                  : "bg-white border-slate-300 text-slate-600 hover:border-primary-400"
               }`}
               onClick={() => setKind(r.key)}
             >
@@ -400,12 +400,12 @@ export default function Reports({ toast }: { toast: Toast }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5 text-center">
               {[
                 ["إجمالي الكشف", `${n(totalNet)} ${curSym}`, "text-slate-900"],
-                ["المدفوع", `${n(paidSum)} ${curSym}`, "text-emerald-700"],
+                ["المدفوع", `${n(paidSum)} ${curSym}`, "text-success-700"],
                 ["غير المدفوع", `${n(unpaidNet)} ${curSym}`, "text-rose-600"],
                 [
                   "الموظفون: مدفوع / الكلي",
                   `${paidCount} / ${payroll.length}`,
-                  "text-indigo-700",
+                  "text-primary-700",
                 ],
               ].map(([k, v, cls]) => (
                 <div key={k} className="rounded-lg border border-slate-300 p-3">
@@ -440,7 +440,7 @@ export default function Reports({ toast }: { toast: Toast }) {
                       <td>{n(r.net_pay)}</td>
                       <td>
                         {p ? (
-                          <span className="font-bold text-emerald-700">
+                          <span className="font-bold text-success-700">
                             مدفوع ✓
                           </span>
                         ) : (
@@ -740,7 +740,7 @@ export default function Reports({ toast }: { toast: Toast }) {
                     </td>
                     <td>
                       {e.active ? (
-                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-700">
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-success-100 text-success-700">
                           نشط
                         </span>
                       ) : (

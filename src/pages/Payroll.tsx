@@ -434,8 +434,8 @@ export default function Payroll({ toast }: { toast: Toast }) {
         </div>
       )}
       {/* ختم: هذه النسخة المطبوعة هي نسخة مؤرشفة كما كانت وقت تعليم الدفع */}
-      <div className="border-2 border-emerald-300 bg-emerald-50 rounded-lg p-3 mt-4 text-center">
-        <span className="font-extrabold text-emerald-700 text-lg">
+      <div className="border-2 border-success-300 bg-success-50 rounded-lg p-3 mt-4 text-center">
+        <span className="font-extrabold text-success-700 text-lg">
           نسخة مؤرشفة
         </span>
       </div>
@@ -664,7 +664,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
         body: (
           <>
             هل تريد تعليم شهر <b>{period}</b> لـ<b>{selName}</b> كمدفوع؟
-            <div className="mt-2 text-xl font-extrabold text-emerald-700">
+            <div className="mt-2 text-xl font-extrabold text-success-700">
               {n(target.net_pay)} {curSym}
             </div>
             <div className="text-xs text-slate-400 mt-1">
@@ -961,7 +961,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
         </div>
         <div className="card">
           <div className="text-xs text-slate-500">إجمالي البدلات</div>
-          <div className="text-xl font-extrabold text-emerald-600">
+          <div className="text-xl font-extrabold text-success-600">
             {n(totalAllow)}{" "}
             <span className="text-base font-bold opacity-60">{curSym}</span>
           </div>
@@ -975,9 +975,9 @@ export default function Payroll({ toast }: { toast: Toast }) {
             <span className="text-base font-bold opacity-60">{curSym}</span>
           </div>
         </div>
-        <div className="card border-indigo-200 bg-indigo-50">
-          <div className="text-xs text-indigo-600">إجمالي الصافي</div>
-          <div className="text-xl font-extrabold text-indigo-700">
+        <div className="card border-primary-200 bg-primary-50">
+          <div className="text-xs text-primary-600">إجمالي الصافي</div>
+          <div className="text-xl font-extrabold text-primary-700">
             {n(totalNet)}{" "}
             <span className="text-base font-bold opacity-60">{curSym}</span>
           </div>
@@ -999,7 +999,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
             onClick={() => setSlipSettingsOpen(true)}
             className={`px-4 py-2 rounded-lg text-sm font-extrabold transition shadow-sm ${
               slipCfg.enabled
-                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                ? "bg-success-600 text-white hover:bg-success-700"
                 : "bg-slate-200 text-slate-600 hover:bg-slate-300"
             }`}
             title="فتح نافذة تعديل إعدادات طباعة القسيمة"
@@ -1024,7 +1024,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
             <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
               <input
                 type="checkbox"
-                className="accent-indigo-600 w-4 h-4"
+                className="accent-primary-600 w-4 h-4"
                 checked={slipCfg.enabled}
                 onChange={(e) =>
                   setSlipDraft({ ...slipCfg, enabled: e.target.checked })
@@ -1098,7 +1098,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   <span
                     className={`px-3 py-1 rounded-full text-sm font-extrabold ${
                       slipSumOk(slipCfg)
-                        ? "bg-emerald-100 text-emerald-700"
+                        ? "bg-success-100 text-success-700"
                         : "bg-red-100 text-red-700"
                     }`}
                   >
@@ -1114,8 +1114,8 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   </button>
                 </div>
                 {sel && slipSplit && (
-                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                    <div className="text-xs font-bold text-indigo-700 mb-2">
+                  <div className="rounded-lg border border-primary-200 bg-primary-50 p-3">
+                    <div className="text-xs font-bold text-primary-700 mb-2">
                       معاينة تقسيم قسيمة {selName} — {period}
                     </div>
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
@@ -1180,7 +1180,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
             {sel && (
               <div className="text-left">
                 <div className="text-xs text-slate-500">صافي الراتب</div>
-                <div className="text-2xl font-extrabold text-indigo-700">
+                <div className="text-2xl font-extrabold text-primary-700">
                   {n(sel.net_pay)}{" "}
                   <span className="text-base opacity-70">{curSym}</span>
                 </div>
@@ -1197,7 +1197,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 ["إضافي (ساعة)", n(sel.overtime_hours), ""],
                 ["مجموع الساعات (شامل الإضافي)", n(sel.total_worked_hours + sel.overtime_hours), "text-slate-700"],
                 ["الأساسي", n(sel.base_pay), "text-slate-900"],
-                ["البدلات", n(sel.allowances), "text-emerald-600"],
+                ["البدلات", n(sel.allowances), "text-success-600"],
                 [
                   "بدل العطلة الأسبوعية",
                   sel.weekend_pay ? n(sel.weekend_pay) : "—",
@@ -1305,7 +1305,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                           {label}
                         </span>
                         {d.overtime_min > 0 && (
-                          <span className="text-[10px] text-indigo-500 mr-1">
+                          <span className="text-[10px] text-primary-500 mr-1">
                             +{d.overtime_min} د إضافي
                           </span>
                         )}
@@ -1351,7 +1351,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 <tr key={r.employee_id} className="hover:bg-slate-50">
                   <td className="td font-medium">
                     <button
-                      className="hover:text-indigo-600 underline decoration-dotted underline-offset-4"
+                      className="hover:text-primary-600 underline decoration-dotted underline-offset-4"
                       onClick={() => setSelId(r.employee_id)}
                       title="عرض أيام الدوام وقسيمة هذا الموظف"
                     >
@@ -1361,7 +1361,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                       {r.pin ? `#${r.pin}` : ""}
                     </span>
                     <button
-                      className="text-xs text-slate-400 hover:text-indigo-600 mr-1"
+                      className="text-xs text-slate-400 hover:text-primary-600 mr-1"
                       onClick={() => openHist(r.employee_id)}
                       title="سجل رواتب هذا الموظف في الأشهر السابقة"
                     >
@@ -1372,7 +1372,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                   <td className="td">{n(r.total_worked_hours)}</td>
                   <td className="td">{n(r.overtime_hours)}</td>
                   <td className="td">{n(r.base_pay)}</td>
-                  <td className="td text-emerald-600">{n(r.allowances)}</td>
+                  <td className="td text-success-600">{n(r.allowances)}</td>
                   <td className="td text-violet-600">
                     {r.weekend_days_paid
                       ? `${n(r.weekend_pay)} (${r.weekend_days_paid} يوم عطلة)`
@@ -1389,7 +1389,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                       {p ? (
                         <>
                           <span
-                            className="badge bg-emerald-100 text-emerald-700 text-xs"
+                            className="badge bg-success-100 text-success-700 text-xs"
                             title={`دُفع بتاريخ ${p.paid_at.slice(0, 10)}${
                               p.method ? ` · ${p.method}` : ""
                             }${p.note ? ` · ${p.note}` : ""} — ${n(p.net)} ${curSym}`}
@@ -1410,7 +1410,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                             غير مدفوع
                           </span>
                           <button
-                            className="text-xs text-slate-400 hover:text-emerald-600"
+                            className="text-xs text-slate-400 hover:text-success-600"
                             title="تعليم كمدفوع بتاريخ اليوم"
                             onClick={() => setPayEmp(r)}
                           >
@@ -1428,9 +1428,9 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 <td className="td" colSpan={8}>
                   {selId === "" ? "الإجمالي العام" : "إجمالي الموظف"}
                 </td>
-                <td className="td text-indigo-700">{n(totalNet)}</td>
+                <td className="td text-primary-700">{n(totalNet)}</td>
                 <td className="td text-xs font-bold">
-                  <span className="text-emerald-700">مدفوع {n(paidTotal)}</span>
+                  <span className="text-success-700">مدفوع {n(paidTotal)}</span>
                   <span className="text-slate-400"> · </span>
                   <span className="text-rose-600">
                     متبقٍّ {n(totalNet - paidTotal)}
@@ -1512,7 +1512,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                         <td className="td">{n(h.total_worked_hours)}</td>
                         <td className="td">{n(h.overtime_hours)}</td>
                         <td className="td">{n(h.base_pay)}</td>
-                        <td className="td text-emerald-600">
+                        <td className="td text-success-600">
                           {n(h.allowances)}
                         </td>
                         <td className="td text-violet-600">
@@ -1521,7 +1521,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                         <td className="td font-extrabold">{n(h.net_pay)}</td>
                         <td className="td">
                           <button
-                            className="text-xs text-indigo-600 hover:underline font-bold"
+                            className="text-xs text-primary-600 hover:underline font-bold"
                             onClick={() => {
                               setPeriod(h.period);
                               setSelId(histEmpId);
@@ -1703,7 +1703,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 </button>
               )}
               <div className="mr-auto">
-                <span className="badge bg-emerald-100 text-emerald-700 text-sm font-bold">
+                <span className="badge bg-success-100 text-success-700 text-sm font-bold">
                   {paysShown.length} دفعة · {n(paysTotal)} {curSym}
                 </span>
               </div>
@@ -1757,7 +1757,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                             </span>
                           )}
                         </td>
-                        <td className="td font-extrabold text-emerald-700">
+                        <td className="td font-extrabold text-success-700">
                           {n(p.net)}
                         </td>
                         <td className="td">{p.method ?? "—"}</td>
@@ -1787,7 +1787,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
                       <td className="td" colSpan={3}>
                         الإجمالي
                       </td>
-                      <td className="td text-emerald-700">{n(paysTotal)}</td>
+                      <td className="td text-success-700">{n(paysTotal)}</td>
                       <td className="td text-xs" colSpan={4}>
                         {paysShown.length} دفعة
                       </td>
@@ -2075,7 +2075,7 @@ function PayModal({
         <div className="font-extrabold text-lg">💵 تعليم كمدفوع</div>
         <div className="text-sm text-slate-600">
           {empName} — صافي شهر {period}
-          <div className="text-2xl font-extrabold text-emerald-700 mt-1">
+          <div className="text-2xl font-extrabold text-success-700 mt-1">
             {n(net)} {sym}
           </div>
         </div>
@@ -2379,7 +2379,7 @@ export function SlipSheet({
                       <>
                         <tr>
                           <td className="text-right">بدل طبيعة العمل</td>
-                          <td className="text-emerald-700">
+                          <td className="text-success-700">
                             + {n(split.shareWork)} {curSym}
                           </td>
                         </tr>
@@ -2387,7 +2387,7 @@ export function SlipSheet({
                           <td className="text-right">
                             بدل المخاطرة والسلامة المهنية
                           </td>
-                          <td className="text-emerald-700">
+                          <td className="text-success-700">
                             + {n(split.shareRisk)} {curSym}
                           </td>
                         </tr>
@@ -2395,7 +2395,7 @@ export function SlipSheet({
                           <td className="text-right">
                             مكافأة الإنجاز / الإنتاجية
                           </td>
-                          <td className="text-emerald-700">
+                          <td className="text-success-700">
                             + {n(split.shareBonus)} {curSym}
                           </td>
                         </tr>
@@ -2428,7 +2428,7 @@ export function SlipSheet({
                         <td className="text-right">
                           إجازات مدفوعة ({sel.paid_leave_days} يوم × بدل الاجازه)
                         </td>
-                        <td className="text-emerald-600">
+                        <td className="text-success-600">
                           + {n(sel.leave_pay ?? 0)} {curSym}
                         </td>
                       </tr>
@@ -2606,10 +2606,10 @@ export function PaySheet({
         {[
           ["عدد الموظفين", String(rows.length), "text-slate-900"],
           ["إجمالي الأساسي", `${n(totalBase)} ${curSym}`, "text-slate-900"],
-          ["إجمالي البدلات", `${n(totalAllow)} ${curSym}`, "text-emerald-700"],
+          ["إجمالي البدلات", `${n(totalAllow)} ${curSym}`, "text-success-700"],
           ["بدل العطلة الأسبوعية", `${n(totalWeekend)} ${curSym}`, "text-violet-700"],
           ["خصم السلف", `${n(totalAdvance)} ${curSym}`, "text-rose-600"],
-          ["إجمالي الصافي", `${n(totalNet)} ${curSym}`, "text-indigo-700"],
+          ["إجمالي الصافي", `${n(totalNet)} ${curSym}`, "text-primary-700"],
         ].map(([k, v, cls]) => (
           <div key={k} className="rounded-lg border border-slate-300 p-2">
             <div className="text-[10px] text-slate-500">{k}</div>
@@ -2620,7 +2620,7 @@ export function PaySheet({
 
       <div className="flex justify-between text-xs text-slate-600 mb-1.5">
         <span>
-          المدفوع: <b className="text-emerald-700">{n(paidSum)} {curSym}</b>
+          المدفوع: <b className="text-success-700">{n(paidSum)} {curSym}</b>
         </span>
         <span>
           غير المدفوع:{" "}
@@ -2670,7 +2670,7 @@ export function PaySheet({
                   {r.advance_deduction ? `− ${n(r.advance_deduction)}` : "—"}
                 </td>
                 <td className="font-extrabold">{n(r.net_pay)}</td>
-                <td className={p ? "text-emerald-700" : "text-rose-600"}>
+                <td className={p ? "text-success-700" : "text-rose-600"}>
                   {p ? "مدفوع ✓" : "غير مدفوع"}
                 </td>
               </tr>
@@ -2696,7 +2696,7 @@ export function PaySheet({
               <td className="font-extrabold text-rose-600">
                 {totalAdvance ? `− ${n(totalAdvance)}` : "—"}
               </td>
-              <td className="font-extrabold text-indigo-700">
+              <td className="font-extrabold text-primary-700">
                 {n(totalNet)}
               </td>
               <td className="font-bold">

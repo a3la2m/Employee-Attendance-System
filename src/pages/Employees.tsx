@@ -395,7 +395,7 @@ export default function Employees({
             key={k}
             className={`px-3 py-1 rounded-full text-xs font-bold border ${
               status === k
-                ? "bg-indigo-600 text-white border-indigo-600"
+                ? "bg-primary-600 text-white border-primary-600"
                 : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
             }`}
             onClick={() => setStatus(k)}
@@ -703,7 +703,7 @@ export default function Employees({
                 <span
                   className={
                     form.bot_allowed
-                      ? "text-emerald-700 font-bold"
+                      ? "text-success-700 font-bold"
                       : "text-rose-700 font-bold"
                   }
                 >
@@ -725,7 +725,7 @@ export default function Employees({
                   type="button"
                   className={`px-4 py-1.5 rounded-lg text-sm font-bold border ${
                     form.active
-                      ? "bg-emerald-600 text-white border-emerald-600"
+                      ? "bg-success-600 text-white border-success-600"
                       : "bg-white text-slate-500 border-slate-300"
                   }`}
                   onClick={() => setForm({ ...form, active: true })}
@@ -809,7 +809,7 @@ export default function Employees({
                       className={`badge ${
                         r.device_privilege === 14
                           ? "bg-amber-100 text-amber-700"
-                          : "bg-indigo-100 text-indigo-700"
+                          : "bg-primary-100 text-primary-700"
                       }`}
                       title={`صلاحية ${privLabel(r.device_privilege)} على جهاز البصمة`}
                     >
@@ -828,7 +828,7 @@ export default function Employees({
                   <span
                     className={`badge ${
                       r.active
-                        ? "bg-emerald-100 text-emerald-700"
+                        ? "bg-success-100 text-success-700"
                         : "bg-rose-100 text-rose-600"
                     }`}
                   >
@@ -846,7 +846,7 @@ export default function Employees({
                 <td className="td">
                   <div className="flex gap-2">
                     <button
-                      className="text-emerald-700 hover:underline text-xs"
+                      className="text-success-700 hover:underline text-xs"
                       onClick={() => setViewEmp(r)}
                       title="عرض كل الحركات والإجازات"
                     >
@@ -874,7 +874,7 @@ export default function Employees({
                       )}
                     </button>
                     <button
-                      className="text-indigo-600 hover:underline text-xs"
+                      className="text-primary-600 hover:underline text-xs"
                       onClick={(e) => {
                         e.stopPropagation();
                         openForm(r);
@@ -1141,11 +1141,11 @@ export function AdvancesModal({
             {activeAdvances.length} سلفة فعالة لم تُخصم بالكامل
           </div>
         </div>
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-          <div className="text-xs text-emerald-700 font-bold">
+        <div className="rounded-lg border border-success-200 bg-success-50 p-3">
+          <div className="text-xs text-success-700 font-bold">
             إجمالي ما تم خصمه
           </div>
-          <div className="text-xl font-extrabold text-emerald-800 mt-0.5">
+          <div className="text-xl font-extrabold text-success-800 mt-0.5">
             {fmtMoney(totalDeducted)} {curSym}
           </div>
         </div>
@@ -1161,8 +1161,8 @@ export function AdvancesModal({
 
       {/* طلبات السلف الواردة من البوت لهذا الموظف */}
       {pendingRequests.length > 0 && (
-        <div className="mb-4 p-3.5 rounded-xl bg-indigo-50 border border-indigo-200 space-y-2">
-          <div className="text-xs font-extrabold text-indigo-900">
+        <div className="mb-4 p-3.5 rounded-xl bg-primary-50 border border-primary-200 space-y-2">
+          <div className="text-xs font-extrabold text-primary-900">
             📥 طلبات سلفة واردة من الموظف عبر بوت تلجرام ({pendingRequests.length}):
           </div>
           {pendingRequests.map((req) => (
@@ -1170,12 +1170,12 @@ export function AdvancesModal({
               key={req.id}
               className={`flex items-center justify-between gap-2 p-2.5 rounded-lg border text-xs ${
                 activeBotReq?.id === req.id
-                  ? "bg-white border-indigo-400 shadow-sm"
-                  : "bg-indigo-50/50 border-indigo-200"
+                  ? "bg-white border-primary-400 shadow-sm"
+                  : "bg-primary-50/50 border-primary-200"
               }`}
             >
               <div>
-                <span className="font-extrabold text-sm text-indigo-800">
+                <span className="font-extrabold text-sm text-primary-800">
                   {fmtMoney(req.amount)} {curSym}
                 </span>
                 {req.note && (
@@ -1189,13 +1189,13 @@ export function AdvancesModal({
                 {activeBotReq?.id !== req.id ? (
                   <button
                     type="button"
-                    className="px-2.5 py-1 rounded bg-indigo-600 text-white font-bold"
+                    className="px-2.5 py-1 rounded bg-primary-600 text-white font-bold"
                     onClick={() => selectBotReq(req)}
                   >
                     تعبئة في النموذج
                   </button>
                 ) : (
-                  <span className="badge bg-indigo-100 text-indigo-800 font-bold">
+                  <span className="badge bg-primary-100 text-primary-800 font-bold">
                     مُعبّأ في النموذج أدناه ↓
                   </span>
                 )}
@@ -1292,7 +1292,7 @@ export function AdvancesModal({
                 }
               />
             </div>
-            <div className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg p-2.5">
+            <div className="text-xs text-primary-700 bg-primary-50 border border-primary-200 rounded-lg p-2.5">
               {previewPerMonth ? (
                 <>
                   قيمة القسط الشهري:{" "}
@@ -1361,7 +1361,7 @@ export function AdvancesModal({
                     className={`badge font-bold ${
                       adv.active
                         ? "bg-amber-100 text-amber-800"
-                        : "bg-emerald-100 text-emerald-700"
+                        : "bg-success-100 text-success-700"
                     }`}
                   >
                     {adv.active ? "⏳ سلفة فعالة (لم تُخصم بالكامل)" : "✓ مخصومة بالكامل"}
@@ -1396,7 +1396,7 @@ export function AdvancesModal({
               <div className="text-xs text-slate-600 flex gap-4">
                 <span>
                   المخصوم:{" "}
-                  <b className="text-emerald-700">
+                  <b className="text-success-700">
                     {fmtMoney(adv.deducted_amount)} {curSym}
                   </b>
                 </span>
@@ -1435,7 +1435,7 @@ export function AdvancesModal({
                         </td>
                         <td className="py-1.5 px-2">
                           {inst.deducted ? (
-                            <span className="badge bg-emerald-100 text-emerald-700">
+                            <span className="badge bg-success-100 text-success-700">
                               ✓ تم الخصم
                               {inst.deducted_at
                                 ? ` (${inst.deducted_at.slice(0, 10)})`
@@ -1452,7 +1452,7 @@ export function AdvancesModal({
                             className={`px-2.5 py-1 rounded text-xs font-bold border transition ${
                               inst.deducted
                                 ? "bg-white text-slate-600 border-slate-300 hover:bg-slate-100"
-                                : "bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700"
+                                : "bg-success-600 text-white border-success-600 hover:bg-success-700"
                             }`}
                             onClick={() =>
                               toggleInst(inst.id, inst.deducted, inst.period)
@@ -1812,7 +1812,7 @@ export function PunchesModal({
           </button>
           <button
             className={`btn-ghost ${
-              grouped ? "!bg-indigo-100 !text-indigo-700 !border !border-indigo-300" : ""
+              grouped ? "!bg-primary-100 !text-primary-700 !border !border-primary-300" : ""
             }`}
             onClick={() => setGrouped((g) => !g)}
             title={
@@ -1925,7 +1925,7 @@ export function PunchesModal({
                         <span
                           className={`badge ${
                             isIn
-                              ? "bg-emerald-100 text-emerald-700"
+                              ? "bg-success-100 text-success-700"
                               : "bg-sky-100 text-sky-700"
                           }`}
                         >
@@ -2055,7 +2055,7 @@ export function PunchesModal({
                 <span
                   className={`badge ${
                     l.paid
-                      ? "bg-emerald-100 text-emerald-700"
+                      ? "bg-success-100 text-success-700"
                       : "bg-rose-100 text-rose-700"
                   }`}
                 >
