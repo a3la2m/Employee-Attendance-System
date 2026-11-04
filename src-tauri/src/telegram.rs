@@ -1507,6 +1507,18 @@ fn finalize_leave_request(
     if existing_leave > 0 {
         return Err("يوجد إجازة مسجّلة بالفعل في هذه الفترة — لا يمكن تقديم طلب مكرر".into());
     }
+    // أيضاً: يوم مُعلَّم إجازة في سجل الحضور (تحويل يدوي من شاشة الحضور)
+    let att_leave: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attendance_days
+             WHERE employee_id=?1 AND date>=?2 AND date<=?3 AND status='leave'",
+            params![emp_id, from_date, to_date],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if att_leave > 0 {
+        return Err("يوجد إجازة مسجّلة بالفعل في هذه الفترة — لا يمكن تقديم طلب مكرر".into());
+    }
     let existing_req: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM leave_requests
