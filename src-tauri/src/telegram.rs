@@ -1049,6 +1049,40 @@ pub fn decide_advance_request(
             let final_start = start_period
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or(def_period);
+            // منع اعتماد سلفة على شهر راتبه مدفوع بالكامل (يؤثر على كشف already-paid)
+            let affected_periods: Vec<String> = if final_mode == "installments" && final_count > 1 {
+                let mut v = Vec::new();
+                let mut ym = final_start.clone();
+                for _ in 0..final_count {
+                    v.push(ym.clone());
+                    // next month
+                    let parts: Vec<&str> = ym.split('-').collect();
+                    let (y, m) = (parts[0].parse::<i32>().unwrap_or(0), parts[1].parse::<u32>().unwrap_or(1));
+                    let (ny, nm) = if m == 12 { (y + 1, 1u32) } else { (y, m + 1) };
+                    ym = format!("{:04}-{:02}", ny, nm);
+                }
+                v
+            } else {
+                vec![final_start.clone()]
+            };
+            for p in &affected_periods {
+                let paid_exists: bool = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM salary_payments WHERE employee_id=?1 AND period=?2",
+                        params![emp_id, p],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap_or(0)
+                    > 0;
+                if paid_exists {
+                    let mm = p.split('-').nth(1).unwrap_or(p).trim_start_matches('0');
+                    let mm = if mm.is_empty() { "0" } else { mm };
+                    return Err(format!(
+                        "راتب شهر {} مدفوع كامل — يرجى اختيار شهر آخر",
+                        mm
+                    ));
+                }
+            }
             let full_note = match (req_note.trim().is_empty(), admin_note.is_empty()) {
                 (true, true) => "طلب سلفة عبر بوت تلجرام".to_string(),
                 (false, true) => req_note.clone(),
