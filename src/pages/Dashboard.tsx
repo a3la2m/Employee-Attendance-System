@@ -102,7 +102,7 @@ export default function DashboardPage({ toast }: { toast: Toast }) {
         <div>
           <h1 className="text-2xl font-extrabold">لوحة التحكم</h1>
           <p className="text-sm text-slate-500 mt-1">
-            {d ? `اليوم: ${d.date}` : "جارٍ التحميل…"} · آخر مزامنة: {d?.last_sync || "—" }
+            {d ? `اليوم: ${d.date}` : "جارٍ التحميل…"} · آخر مزامنة: {d?.last_sync ? `${d.last_sync.split("T")[0]} · ${(d.last_sync.split("T")[1] || "").slice(0, 5)}` : "—" }
           </p>
         </div>
         <button className="btn-primary" onClick={sync} disabled={busy}>

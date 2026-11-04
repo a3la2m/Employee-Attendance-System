@@ -122,7 +122,7 @@ export default function Device({ toast }: { toast: Toast }) {
             {deviceUnreachable ? "⚠️ جهاز البصمة غير متاح" : "✅ جهاز البصمة متصل"}
           </div>
           <div className="text-xs text-slate-600 mt-0.5">
-            آخر مزامنة: <b className="font-mono">{lastSync}</b>
+            آخر مزامنة: <b className="font-mono">{lastSync === "—" ? "—" : `${lastSync.split("T")[0]} · ${(lastSync.split("T")[1] || "").slice(0, 5)}`}</b>
             {deviceUnreachable && " — لن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال"}
           </div>
         </div>
