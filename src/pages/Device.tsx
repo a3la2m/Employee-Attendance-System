@@ -17,6 +17,8 @@ export default function Device({ toast }: { toast: Toast }) {
   const [tc, setTc] = useState<TimeCheck | null>(null);
   const [cfg, setCfg] = useState<Settings>({});
   const [busy, setBusy] = useState(false);
+  const [lastSync, setLastSync] = useState<string>("—");
+  const [deviceUnreachable, setDeviceUnreachable] = useState(false);
 
   const probe = async () => {
     setBusy(true);
@@ -24,6 +26,7 @@ export default function Device({ toast }: { toast: Toast }) {
       setInfo(await deviceInfo());
       setTc(await checkTimeSync());
       toast("تم الاتصال بالجهاز");
+      loadCfg();
     } catch (e) {
       setInfo(null);
       setTc(null);
@@ -41,6 +44,7 @@ export default function Device({ toast }: { toast: Toast }) {
         `سحب ناجح: ${r.device.records} سجل، ${r.new_punches} جديد — أُعيد حساب ${r.days_recomputed} يوم${clockNote(r.clock)}`,
       );
       setInfo(r.device);
+      loadCfg();
     } catch (e) {
       toast(String(e), "err");
     } finally {
@@ -65,15 +69,17 @@ export default function Device({ toast }: { toast: Toast }) {
 
   const loadCfg = () =>
     getSettings()
-      .then((s) =>
+      .then((s) => {
         setCfg({
           device_ip: s.device_ip || "",
           device_port: s.device_port || "4370",
           device_comm_key: s.device_comm_key || "0",
           auto_sync_min: s.auto_sync_min || "5",
           timezone: s.timezone || "Asia/Jerusalem",
-        }),
-      )
+        });
+        setLastSync(s.last_sync_at || "—");
+        setDeviceUnreachable(s.device_unreachable === "1");
+      })
       .catch(() => {});
 
   useEffect(() => {
@@ -101,6 +107,24 @@ export default function Device({ toast }: { toast: Toast }) {
           <button className="btn-primary" onClick={sync} disabled={busy}>
             {busy ? "جارٍ…" : "⬇️ سحب السجلات"}
           </button>
+        </div>
+      </div>
+
+      {/* حالة الاتصال (بدون تأخير — تُحمَّل من الإعدادات) */}
+      <div className={`card flex items-center gap-4 ${deviceUnreachable ? "border-rose-300 bg-rose-50" : "border-emerald-300 bg-emerald-50"}`}>
+        <span
+          className={`w-4 h-4 rounded-full ${
+            deviceUnreachable ? "bg-rose-500" : "bg-emerald-500"
+          } animate-pulse`}
+        />
+        <div className="flex-1">
+          <div className="font-extrabold text-lg">
+            {deviceUnreachable ? "⚠️ جهاز البصمة غير متاح" : "✅ جهاز البصمة متصل"}
+          </div>
+          <div className="text-xs text-slate-600 mt-0.5">
+            آخر مزامنة: <b className="font-mono">{lastSync}</b>
+            {deviceUnreachable && " — لن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال"}
+          </div>
         </div>
       </div>
 

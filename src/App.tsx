@@ -17,6 +17,7 @@ import {
   clearNotifications,
   leaveRequestsList,
   advanceRequestsList,
+  getSettings,
 } from "./lib/api";
 import type { AdvanceRequest, Notification } from "./lib/types";
 import BotRequestsModal from "./components/BotRequestsModal";
@@ -92,6 +93,7 @@ export default function App() {
   // طلبات الإجازات والسلف الواردة من البوت + عدّاد الطلبات المعلقة
   const [botReqOpen, setBotReqOpen] = useState(false);
   const [pendingBotCount, setPendingBotCount] = useState(0);
+  const [deviceOk, setDeviceOk] = useState<boolean | null>(null);
   const [advFocus, setAdvFocus] = useState<AdvanceRequest | null>(null);
 
   const toast = (m: string, t: "ok" | "err" = "ok") => setToastMsg({ m, t });
@@ -132,6 +134,31 @@ export default function App() {
   useEffect(() => {
     loadNotifs();
     const iv = setInterval(loadNotifs, 15000); // تحديث العدّاد تلقائياً
+    return () => clearInterval(iv);
+  }, []);
+
+  // حالة جهاز البصمة: نقطة خضراء (متصل) / حمراء (مشكلة) في الشريط الجانبي
+  const checkDeviceStatus = async () => {
+    try {
+      const s = await getSettings();
+      const unreachable = s.device_unreachable === "1";
+      const lastSync = s.last_sync_at || "";
+      // إذا كانت آخر مزامنة أقدم من يومين → مشكلة
+      let stale = false;
+      if (lastSync && lastSync !== "-") {
+        const dt = new Date(lastSync.replace("T", " ") + "Z");
+        if (!isNaN(dt.getTime())) {
+          stale = Date.now() - dt.getTime() > 2 * 24 * 60 * 60 * 1000;
+        }
+      }
+      setDeviceOk(!unreachable && !stale);
+    } catch {
+      setDeviceOk(false);
+    }
+  };
+  useEffect(() => {
+    checkDeviceStatus();
+    const iv = setInterval(checkDeviceStatus, 30000);
     return () => clearInterval(iv);
   }, []);
 
@@ -401,6 +428,14 @@ export default function App() {
               >
                 <span className="text-base">{n.icon}</span>
                 <span className="flex-1 text-right">{n.label}</span>
+                {n.key === "device" && deviceOk !== null && (
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full ${
+                      deviceOk ? "bg-emerald-400" : "bg-rose-500"
+                    }`}
+                    title={deviceOk ? "متصل بجهاز البصمة" : "مشكلة في الاتصال بجهاز البصمة"}
+                  />
+                )}
                 {locked && <span className="text-xs">🔒</span>}
               </button>
             );

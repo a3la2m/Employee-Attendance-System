@@ -903,46 +903,14 @@ pub fn sync_device(state: tauri::State<'_, AppState>) -> Result<Value, String> {
 /// إرسال/تحديث اسم الموظف على جهاز البصمة حسب رقم البصمة (USER_WRQ).
 #[tauri::command]
 pub fn get_next_device_pin(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let (ip, port, key) = {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let s = settings_map(&conn);
-        (
-            setting(&s, "device_ip", "192.168.1.205"),
-            setting_i(&s, "device_port", 4370) as u16,
-            setting_i(&s, "device_comm_key", 0) as u32,
-        )
-    };
-    let mut backend = make_backend(&ip, port, key, false);
-    if let Err(_) = backend.connect() {
-        // fallback to local max
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let mut max_pin: i64 = 0;
-        let mut st = conn.prepare("SELECT pin FROM employees WHERE pin IS NOT NULL AND pin <> ''").map_err(|e| e.to_string())?;
-        if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
-            for r in rows.flatten() {
-                if let Ok(n) = r.parse::<i64>() {
-                    if n > max_pin { max_pin = n; }
-                }
-            }
-        }
-        backend.close();
-        return Ok((max_pin + 1).to_string());
-    }
-    let users = backend.pull_users().map_err(|e| e.to_string())?;
-    backend.close();
+    // تعبئة سريعة (بلا اتصال بالجهاز) — لفتح نافذة «موظف جديد» فوراً.
+    // (الاتصال بالجهاز كان يسبب تأخيراً ملحوظاً؛ التحقق من تعارض الأرقام
+    //  يتم عند الحفظ/المزامنة.)
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut max_pin: i64 = 0;
-    for (pin, _name, _card, _priv) in &users {
-        if let Ok(n) = pin.parse::<i64>() {
-            if n > max_pin { max_pin = n; }
-        }
-    }
-    {
-        let conn = state.db.lock().map_err(|e| e.to_string())?;
-        let mut st = conn.prepare("SELECT pin FROM employees WHERE pin IS NOT NULL AND pin <> ''").map_err(|e| e.to_string())?;
-        let rows: Vec<String> = st.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?
-            .flatten()
-            .collect();
-        for r in rows {
+    let mut st = conn.prepare("SELECT pin FROM employees WHERE pin IS NOT NULL AND pin <> ''").map_err(|e| e.to_string())?;
+    if let Ok(rows) = st.query_map([], |r| r.get::<_, String>(0)) {
+        for r in rows.flatten() {
             if let Ok(n) = r.parse::<i64>() {
                 if n > max_pin { max_pin = n; }
             }
