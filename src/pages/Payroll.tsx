@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { createPortal } from "react-dom";
 import {
   getPayroll,
@@ -199,6 +200,20 @@ export default function Payroll({ toast }: { toast: Toast }) {
       .catch(() => {});
     listEmployees().then(setEmps).catch(() => {});
     payslipSnapshots(period).then(setSnaps).catch(() => {});
+  }, [period]);
+
+  // تحديث تلقائي عند اعتماد سلفة/إجازة من طلبات البوت (يؤثر على كشف الرواتب)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen("payroll-changed", () => {
+      load();
+      payslipSnapshots(period).then(setSnaps).catch(() => {});
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
   }, [period]);
 
   // أيام دوام الموظف المحدّد (حضور/انصراف لكل يوم في الفترة)

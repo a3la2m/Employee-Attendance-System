@@ -827,6 +827,7 @@ pub fn leave_requests_list(state: tauri::State<'_, AppState>) -> Result<Vec<Leav
 #[tauri::command]
 pub fn decide_leave_request(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     id: i64,
     approve: bool,
     paid: Option<bool>,
@@ -964,6 +965,8 @@ pub fn decide_leave_request(
             let _ = send(&token, &c, &tg_msg, None);
         }
     }
+    let _ = app.emit("attendance-changed", serde_json::json!({"kind": "leave", "id": id, "approve": approve}));
+    let _ = app.emit("payroll-changed", serde_json::json!({"kind": "leave", "id": id, "approve": approve}));
     Ok(())
 }
 
@@ -1006,6 +1009,7 @@ pub fn advance_requests_list(
 #[tauri::command]
 pub fn decide_advance_request(
     state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
     id: i64,
     approve: bool,
     amount: Option<f64>,
@@ -1124,6 +1128,7 @@ pub fn decide_advance_request(
             let _ = send(&token, &c, &tg_msg, None);
         }
     }
+    let _ = app.emit("payroll-changed", serde_json::json!({"kind": "advance", "id": id, "approve": approve}));
     Ok(())
 }
 

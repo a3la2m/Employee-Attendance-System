@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   getMonthDays,
   recomputeDays,
@@ -170,6 +171,20 @@ export default function Attendance({
   useEffect(() => {
     load();
   }, [period]);
+
+  // تحديث تلقائي عند اعتماد إجازة من طلبات البوت (يؤثر على الحضور)
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen("attendance-changed", () => {
+      load();
+      loadDaily();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
 
   const loadDaily = async () => {
     setLoadingD(true);
