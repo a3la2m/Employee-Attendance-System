@@ -1082,6 +1082,28 @@ pub fn decide_advance_request(
                         mm
                     ));
                 }
+                // منع اعتماد سلفة على شهر ليس فيه راتب (لا حضور/أجور) —
+                // (أشهر مستقبلية مسموحة: الراتب سيُحتسب لاحقاً)
+                let today_ym = today_in(&st)[..7].to_string();
+                if p.as_str() < today_ym.as_str() {
+                    let has_work: bool = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM attendance_days
+                             WHERE employee_id=?1 AND date LIKE ?2 AND first_in IS NOT NULL",
+                            params![emp_id, format!("{}%", p)],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap_or(0)
+                        > 0;
+                    if !has_work {
+                        let mm = p.split('-').nth(1).unwrap_or(p).trim_start_matches('0');
+                        let mm = if mm.is_empty() { "0" } else { mm };
+                        return Err(format!(
+                            "لا يوجد راتب لشهر {} — يرجى اختيار شهر آخر",
+                            mm
+                        ));
+                    }
+                }
             }
             let full_note = match (req_note.trim().is_empty(), admin_note.is_empty()) {
                 (true, true) => "طلب سلفة عبر بوت تلجرام".to_string(),

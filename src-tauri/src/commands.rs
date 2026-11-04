@@ -6448,3 +6448,21 @@ mod payroll_check_mod {
 }
 
 
+#[cfg(test)]
+mod pc4_mod {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn pc4() {
+        let db_path = "/home/alaa/.config/com.attendance.system/attendance.db";
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        for period in ["2026-09", "2026-10"] {
+            let res = payroll_impl(&conn, period).unwrap();
+            for r in res {
+                if r.employee_name == "حسنسن" {
+                    println!("{}: days_present={} worked={} overtime={} net_pay={}", period, r.days_present, r.total_worked_hours, r.overtime_hours, r.net_pay);
+                }
+            }
+        }
+    }
+}
