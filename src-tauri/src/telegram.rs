@@ -1495,6 +1495,30 @@ fn finalize_leave_request(
     if days <= 0 {
         return Err("تاريخ الانتهاء يجب أن يكون مساوياً لتاريخ البداية أو بعده".into());
     }
+    // منع طلب مكرر: إجازة موجودة (أو طلب قيد المراجعة/معتمد) في نفس الفترة
+    let existing_leave: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM leaves
+             WHERE employee_id=?1 AND from_date<=?2 AND to_date>=?3",
+            params![emp_id, to_date, from_date],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if existing_leave > 0 {
+        return Err("يوجد إجازة مسجّلة بالفعل في هذه الفترة — لا يمكن تقديم طلب مكرر".into());
+    }
+    let existing_req: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM leave_requests
+             WHERE employee_id=?1 AND status IN ('pending','approved')
+               AND from_date<=?2 AND to_date>=?3",
+            params![emp_id, to_date, from_date],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if existing_req > 0 {
+        return Err("يوجد طلب إجازة قيد المراجعة أو معتمد بالفعل في هذه الفترة — لا يمكن تقديم طلب مكرر".into());
+    }
     let paid = leave_type != "unpaid";
     let now = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     conn.execute(

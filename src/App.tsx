@@ -9,6 +9,7 @@ import Device from "./pages/Device";
 import Settings from "./pages/Settings";
 import Telegram from "./pages/Telegram";
 import Toast from "./components/Toast";
+import logo from "./assets/logo.png";
 import { useConfirm } from "./components/Confirm";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -261,9 +262,12 @@ export default function App() {
       <aside className="w-60 shrink-0 bg-slate-900 text-slate-100 flex flex-col">
         <div ref={bellRef} className="px-5 py-5 border-b border-slate-800 relative">
           <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="text-lg font-extrabold">نظام الحضور</div>
-              <div className="text-xs text-slate-400 mt-0.5">والرواتب — بصمة K50</div>
+            <div className="flex items-center gap-2">
+              <img src={logo} alt="logo" className="w-9 h-9 rounded-lg object-contain" />
+              <div>
+                <div className="text-lg font-extrabold">نظام الحضور</div>
+                <div className="text-xs text-slate-400 mt-0.5">والرواتب — بصمة K50</div>
+              </div>
             </div>
             {/* زر الإشعارات: سجل التنبيهات + عدّاد غير المقروء */}
             <button
