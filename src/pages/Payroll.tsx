@@ -2161,8 +2161,15 @@ export function SlipSheet({
   // جدول الأيام: يُقسَّم إلى نصفين جنباً إلى جنب إن كان طويلاً (اختصار الطول)
   const splitDays = slipDays.length > 10;
   const half = Math.ceil(slipDays.length / 2);
+  // حجم خط ديناميكي لجدول الأيام: كلما زاد عدد الصفوف صُغّر الخط (والتعبئة)
+  // لضمان خروج القسيمة في صفحة A4 واحدة. 8px حد أدنى (قابل للقراءة).
+  const daysFont =
+    slipDays.length <= 8 ? 11 : slipDays.length <= 12 ? 10 : slipDays.length <= 18 ? 9 : 8;
   const dayTable = (list: AttendanceDay[], from: number) => (
-    <table className={`report-table${splitDays ? " slip-days" : ""}`}>
+    <table
+      className={`report-table${splitDays ? " slip-days" : ""}`}
+      style={splitDays ? { fontSize: `${daysFont}px` } : undefined}
+    >
       {splitDays && (
         <colgroup>
           <col style={{ width: "7%" }} />

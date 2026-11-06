@@ -72,7 +72,7 @@ export const printCss = `
 }
 /* جدول الأيام مقسوماً إلى نصفين جنباً إلى جنب: أعمدة ثابتة وخط أصغر */
 .pay-slip .slip-days { table-layout: fixed; }
-.pay-slip .slip-days th, .pay-slip .slip-days td { padding: 2px 3px; font-size: 10.5px; }
+.pay-slip .slip-days th, .pay-slip .slip-days td { padding: 1px 2px; font-size: 10.5px; }
 .pay-slip .slip-days th { text-align: center; }
 .pay-slip .slip-days th:nth-child(2) { text-align: right; }
 .pay-slip .slip-days td span { font-size: 10px; padding: 0 4px; white-space: nowrap; }
