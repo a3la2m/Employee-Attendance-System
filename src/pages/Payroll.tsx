@@ -2178,7 +2178,7 @@ export function SlipSheet({
   // حجم خط ديناميكي لجدول الأيام: كلما زاد عدد الصفوف صُغّر الخط (والتعبئة)
   // لضمان خروج القسيمة في صفحة A4 واحدة. 8px حد أدنى (قابل للقراءة).
   const daysFont =
-    slipDays.length <= 8 ? 11 : slipDays.length <= 12 ? 10 : slipDays.length <= 18 ? 9 : 8;
+    slipDays.length <= 8 ? 10 : slipDays.length <= 12 ? 9 : slipDays.length <= 18 ? 8 : 7;
   const dayTable = (list: AttendanceDay[], from: number) => (
     <table
       className={`report-table${splitDays ? " slip-days" : ""}`}
@@ -2213,7 +2213,7 @@ export function SlipSheet({
           </tr>
         )}
         {list.map((d, i) => {
-          const [label, cls] = stInfo(d);
+          const [label] = stInfo(d);
           return (
             <tr key={d.id}>
               <td>{from + i + 1}</td>
@@ -2228,13 +2228,7 @@ export function SlipSheet({
                 )}
               </td>
               <td>{hrs(d.worked_min)}</td>
-              <td>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-bold ${cls}`}
-                >
-                  {label}
-                </span>
-              </td>
+              <td>{label}</td>
             </tr>
           );
         })}
@@ -2288,7 +2282,7 @@ export function SlipSheet({
             </div>
           </div>
 
-          <div className="text-sm font-bold mb-1">
+          <div className="text-sm font-bold mb-0.5">
             أيام الدوام وأوقات الدخول والخروج
           </div>
           {splitDays ? (
@@ -2309,7 +2303,7 @@ export function SlipSheet({
                 </div>
               )}
               {/* الجدول مقسوم إلى قسمين جنباً إلى جنب: الاستحقاقات | الساعات والاستقطاعات */}
-              <div className="grid grid-cols-2 gap-2 items-start mt-2">
+              <div className="grid grid-cols-2 gap-1.5 items-start mt-1.5">
                 <table className="report-table slip-sum">
                   <colgroup>
                     <col style={{ width: "66%" }} />
@@ -2554,13 +2548,13 @@ export function SlipSheet({
             </>
           )}
 
-          <div className="grid grid-cols-2 gap-8 mt-4 text-sm text-center slip-signs">
+          <div className="grid grid-cols-2 gap-8 mt-2 text-sm text-center slip-signs">
             <div>
-              <div className="h-8 border-b border-dotted border-slate-400" />
+              <div className="h-6 border-b border-dotted border-slate-400" />
               <div className="mt-0.5 text-xs font-bold">توقيع المستلم</div>
             </div>
             <div>
-              <div className="h-8 border-b border-dotted border-slate-400" />
+              <div className="h-6 border-b border-dotted border-slate-400" />
               <div className="mt-0.5 text-xs font-bold">مسؤول الرواتب</div>
             </div>
           </div>

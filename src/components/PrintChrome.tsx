@@ -16,21 +16,21 @@ export function PrintHeader({
 }) {
   const logoOn = showLogo(cfg);
   return (
-    <header className="flex items-center justify-between border-b-2 border-slate-800 pb-4 mb-5">
-      <div className="flex items-center gap-4">
+    <header className="flex items-center justify-between border-b-2 border-slate-800 pb-2 mb-3">
+      <div className="flex items-center gap-3">
         {logoOn &&
           (logo ? (
-            <img src={logo} alt="شعار" className="w-16 h-16 object-contain" />
+            <img src={logo} alt="شعار" className="w-12 h-12 object-contain" />
           ) : (
-            <div className="w-16 h-16 rounded-lg bg-slate-200 grid place-content-center text-2xl">
+            <div className="w-12 h-12 rounded-lg bg-slate-200 grid place-content-center text-xl">
               🏢
             </div>
           ))}
         <div>
-          <div className="text-xl font-extrabold whitespace-pre-line">
+          <div className="text-lg font-extrabold whitespace-pre-line">
             {headerText(cfg)}
           </div>
-          <div className="text-sm text-slate-600">نظام إدارة الحضور والرواتب</div>
+          <div className="text-xs text-slate-600">نظام إدارة الحضور والرواتب</div>
         </div>
       </div>
       <div className="text-left text-sm">
