@@ -93,9 +93,9 @@ export const printCss = `
 /* شريط الصافي المستحق بعرض الورقة تحت الجدولين */
 .pay-slip .slip-net {
   display: flex; align-items: center; justify-content: space-between;
-  margin-top: 6px; padding: 5px 12px; border-radius: 6px;
-  background: #eef2ff; border: 1px solid #c7d2fe; border-top: 3px solid #4f46e5;
-  font-size: 13px; font-weight: 900; color: #3730a3;
+  margin-top: 4px; padding: 3px 8px; border-radius: 6px;
+  background: #eef2ff; border: 1px solid #c7d2fe; border-top: 2px solid #4f46e5;
+  font-size: 12px; font-weight: 900; color: #3730a3;
 }
 .pay-slip .slip-net .amount { font-size: 16px; letter-spacing: 0.3px; }
 /* كشف الرواتب المطبوع: أعمدة مضغوطة لتناسب عرض A4 */
@@ -104,7 +104,7 @@ export const printCss = `
 .pay-sheet .pay-table td { padding: 4px 3px; font-size: 10.5px; }
 .pay-sheet .pay-table .total-row td { font-size: 11px; }
 
-@page { size: A4; margin: 12mm; }
+@page { size: A4; margin: 8mm; }
 
 @media print {
   body { background: #fff !important; }

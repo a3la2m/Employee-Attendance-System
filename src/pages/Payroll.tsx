@@ -485,6 +485,16 @@ export default function Payroll({ toast }: { toast: Toast }) {
   // إعدادات التقسيم: المسودة غير المحفوظة إن وُجدت، وإلا المحفوظة في settings
   const slipCfg = slipDraft ?? readSlipCfg(cfg);
 
+  // إغلاق نافذة القسيمة بـ Escape
+  useEffect(() => {
+    if (!slipOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSlipOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [slipOpen]);
+
   const loadPayrollAtt = async () => {
     if (!payrollAttOpen || selId === "") return;
     setPayrollAttLoading(true);
@@ -2248,24 +2258,24 @@ export function SlipSheet({
           />
 
           {/* شريط بيانات الموظف مضغوط في صف واحد لاختصار الطول */}
-          <div className="slip-meta grid grid-cols-4 border border-slate-300 rounded-md overflow-hidden text-sm mb-3">
-            <div className="p-2 border-l border-slate-200">
+          <div className="slip-meta grid grid-cols-4 border border-slate-300 rounded-md overflow-hidden text-sm mb-2">
+            <div className="p-1.5 border-l border-slate-200">
               <div className="text-[10px] text-slate-500">الموظف</div>
               <div className="font-extrabold truncate">{selName}</div>
               <div className="text-[11px] text-slate-500 truncate">
                 {selJob || "—"}
               </div>
             </div>
-            <div className="p-2 border-l border-slate-200">
+            <div className="p-1.5 border-l border-slate-200">
               <div className="text-[10px] text-slate-500">رقم البصمة</div>
               <div className="font-extrabold font-mono">{pin}</div>
             </div>
-            <div className="p-2 border-l border-slate-200">
+            <div className="p-1.5 border-l border-slate-200">
               <div className="text-[10px] text-slate-500">الفترة</div>
               <div className="font-extrabold">{pLabel(period)}</div>
               <div className="text-[11px] text-slate-500 font-mono">{period}</div>
             </div>
-            <div className="p-2">
+            <div className="p-1.5">
               <div className="text-[10px] text-slate-500">ملخص الحضور</div>
               <div className="font-bold">
                 {sel
@@ -2299,7 +2309,7 @@ export function SlipSheet({
                 </div>
               )}
               {/* الجدول مقسوم إلى قسمين جنباً إلى جنب: الاستحقاقات | الساعات والاستقطاعات */}
-              <div className="grid grid-cols-2 gap-3 items-start mt-3">
+              <div className="grid grid-cols-2 gap-2 items-start mt-2">
                 <table className="report-table slip-sum">
                   <colgroup>
                     <col style={{ width: "66%" }} />
