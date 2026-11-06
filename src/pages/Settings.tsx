@@ -443,7 +443,7 @@ export default function SettingsPage({ toast }: { toast: Toast }) {
   };
 
   return (
-    <div className="p-6 space-y-5 max-w-4xl">
+    <div className="p-6 space-y-5 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-extrabold">الإعدادات</h1>
         <button className="btn-primary" onClick={saveAll}>
