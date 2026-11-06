@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getSettings,
   saveSetting,
@@ -152,6 +152,15 @@ export default function Telegram({ toast }: { toast: Toast }) {
     setLogOpen(true);
     loadChatLog();
   };
+
+  // تحديث تلقائي لسجل المحادثات (كل 5 ثوانٍ) while the modal is open
+  useEffect(() => {
+    if (!logOpen) return;
+    const iv = setInterval(() => {
+      loadChatLog();
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [logOpen]);
 
   const load = async () => {
     try {
@@ -1148,6 +1157,10 @@ function ChatLogModal({
 }) {
   const q = search.trim().toLowerCase();
 
+  // مرجع حاوية الرسائل للتمرير إلى آخر رسالة (الأحدث) عند فتح المحادثة
+  // أو عند وصول رسائل جديدة.
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   // قائمة الموظفين الذين لديهم محادثات أو مرتبطين
   const contacts = useMemo(() => {
     const map = new Map<
@@ -1209,6 +1222,15 @@ function ChatLogModal({
     });
     return empId === "all" ? list : [...list].reverse();
   }, [messages, empId, q]);
+
+  // تمرير إلى آخر رسالة (الأحدث) عند عرض محادثة موظف محدد.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (empId !== "all") {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [filteredMsgs, empId]);
 
   return (
     <Modal
@@ -1325,7 +1347,7 @@ function ChatLogModal({
               </span>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/40">
+            <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/40">
               {filteredMsgs.length === 0 ? (
                 <div className="h-full grid place-content-center text-center text-sm text-slate-400">
                   لا توجد رسائل مطابقة للعرض حالياً.
