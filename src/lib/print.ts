@@ -78,7 +78,7 @@ export const printCss = `
 .pay-slip .slip-days td span { font-size: 8.5px; padding: 0 3px; white-space: nowrap; }
 .pay-slip .slip-days td:nth-child(6) { white-space: nowrap; }
 /* جدولان جانبيان في القسيمة: الاستحقاقات | الساعات والاستقطاعات */
-.pay-slip .slip-sum { table-layout: fixed; page-break-inside: avoid; }
+.pay-slip .slip-sum { table-layout: fixed; page-break-inside: auto; }
 .pay-slip .slip-sum th { background: #eef2ff; font-size: 10px; font-weight: 800; }
 .pay-slip .slip-sum td { padding: 1.5px 3px; font-size: 9.5px; }
 .pay-slip .slip-sum td:first-child { text-align: right; }
@@ -129,7 +129,7 @@ export const printCss = `
   body.print-sheet .pay-sheet .print-footer { margin-top: 16px; }
   /* في القسيمة: التوقيعات والتذييل أسفل الصفحة */
   body.print-slip main .pay-slip {
-    display: flex !important; flex-direction: column; min-height: 272mm;
+    display: flex !important; flex-direction: column; min-height: auto;
   }
   body.print-slip main .pay-slip .slip-signs { margin-top: auto; }
   body.print-slip main .pay-slip .print-footer { margin-top: 8px; }
