@@ -536,8 +536,7 @@ export default function Payroll({ toast }: { toast: Toast }) {
     (d) =>
       d.first_in ||
       d.status === "leave" ||
-      d.status === "holiday" ||
-      d.status === "weekend",
+      d.status === "holiday",
   );
 
   // تقسيم القسيمة للطباعة (null إن كان ملغى أو النِسب ≠ 100%)
@@ -1229,6 +1228,11 @@ export default function Payroll({ toast }: { toast: Toast }) {
                 إجازات مدفوعة: <b>{sel.paid_leave_days}</b> يوم · غير مدفوعة:{" "}
                 <b>{sel.unpaid_leave_days}</b> · إجازات رسمية:{" "}
                 <b>{sel.holiday_days}</b>
+                {sel.weekend_days_paid > 0 && (
+                  <>
+                    {" "}· عطل أسبوعية: <b>{sel.weekend_days_paid}</b>
+                  </>
+                )}
                 {(sel.comp_off_days ?? 0) > 0 && (
                   <>
                     {" "}
@@ -2530,6 +2534,7 @@ export function SlipSheet({
                 <div className="mt-2 text-[11px] text-slate-500 text-right leading-relaxed">
                   إجازات: مدفوعة {sel.paid_leave_days} · غير مدفوعة{" "}
                   {sel.unpaid_leave_days} · رسمية {sel.holiday_days}
+                  {sel.weekend_days_paid > 0 ? ` · عطل أسبوعية ${sel.weekend_days_paid}` : ""}
                   {(sel.comp_off_days ?? 0) > 0
                     ? ` · بدل ${sel.comp_off_days}`
                     : ""}{" "}
@@ -2539,14 +2544,14 @@ export function SlipSheet({
             </>
           )}
 
-          <div className="grid grid-cols-2 gap-8 mt-6 text-sm text-center slip-signs">
+          <div className="grid grid-cols-2 gap-8 mt-4 text-sm text-center slip-signs">
             <div>
-              <div className="h-12 border-b border-dotted border-slate-400" />
-              <div className="mt-1 font-bold">توقيع المستلم</div>
+              <div className="h-8 border-b border-dotted border-slate-400" />
+              <div className="mt-0.5 text-xs font-bold">توقيع المستلم</div>
             </div>
             <div>
-              <div className="h-12 border-b border-dotted border-slate-400" />
-              <div className="mt-1 font-bold">مسؤول الرواتب</div>
+              <div className="h-8 border-b border-dotted border-slate-400" />
+              <div className="mt-0.5 text-xs font-bold">مسؤول الرواتب</div>
             </div>
           </div>
 
