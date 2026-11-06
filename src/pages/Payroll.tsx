@@ -2182,7 +2182,7 @@ export function SlipSheet({
   const dayTable = (list: AttendanceDay[], from: number) => (
     <table
       className={`report-table${splitDays ? " slip-days" : ""}`}
-      style={splitDays ? { fontSize: `${daysFont}px` } : undefined}
+      style={splitDays ? ({ ["--slip-days-fs"]: `${daysFont}px` } as React.CSSProperties) : undefined}
     >
       {splitDays && (
         <colgroup>
