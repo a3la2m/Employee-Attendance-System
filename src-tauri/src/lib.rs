@@ -233,9 +233,28 @@ fn sync_once(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
     match commands::sync_device_internal(&state) {
         Ok(v) => {
-            // الاتصال بالجهاز نجح — ألغِ حالة «غير متاح»
+            // الاتصال بالجهاز نجح — هل كانت الحالة «غير متاح»؟ (انتقال 1→0)
+            let was_unreachable = {
+                if let Ok(conn) = state.db.lock() {
+                    db::all_settings(&conn)
+                        .ok()
+                        .and_then(|s| s.get("device_unreachable").cloned())
+                        .unwrap_or_default()
+                        == "1"
+                } else {
+                    false
+                }
+            };
             if let Ok(conn) = state.db.lock() {
                 let _ = db::set_setting(&conn, "device_unreachable", "0");
+                let _ = db::set_setting(&conn, "device_unreachable_notified", "");
+            }
+            if was_unreachable {
+                // تعافٍ: أرسل «كل شيء تمام»
+                use tauri_plugin_notification::NotificationExt;
+                let msg = "✅ جهاز البصمة متصل ويعمل دون مشاكل — تم استعادة الاتصال.";
+                let _ = app.notification().builder().title("✅ جهاز البصمة متصل").body(msg).show();
+                crate::telegram::notify_supervisors_gated(app, "✅ جهاز البصمة متصل", msg, Some("tg_sup_alerts"));
             }
             let new_punches = v.get("new_punches").and_then(|x| x.as_i64()).unwrap_or(0);
             if new_punches > 0 {
@@ -274,6 +293,8 @@ fn sync_once(app: &tauri::AppHandle) {
             }
         }
         Err(e) => {
+            use chrono::Timelike;
+            use tauri_plugin_notification::NotificationExt;
             log::warn!("auto sync failed: {e}");
             let _ = app.emit("sync", serde_json::json!({"ok": false, "error": e}));
             // هل كانت الحالة «غير متاح» مسبقاً؟ (لإرسال الإشعار عند الانتقال فقط)
@@ -291,12 +312,56 @@ fn sync_once(app: &tauri::AppHandle) {
             if let Ok(conn) = state.db.lock() {
                 let _ = db::set_setting(&conn, "device_unreachable", "1");
             }
-            if !was_unreachable {
-                // انتقال 0→1: أرسل إشعاراً (سطح المكتب + تلجرام) مرة واحدة
+            // هل أُرسل إشعار اليوم؟ (لتجنب التكرار)
+            let notified_today = {
+                if let Ok(conn) = state.db.lock() {
+                    db::all_settings(&conn)
+                        .ok()
+                        .and_then(|s| s.get("device_unreachable_notified").cloned())
+                        .unwrap_or_default()
+                        == chrono::Utc::now().format("%Y-%m-%d").to_string()
+                } else {
+                    false
+                }
+            };
+            // وقت محلي
+            let now_local = {
+                use chrono::Timelike;
+                let tz_name = if let Ok(conn) = state.db.lock() {
+                    db::all_settings(&conn).ok().and_then(|s| s.get("timezone").cloned()).unwrap_or_else(|| "Asia/Jerusalem".into())
+                } else { "Asia/Jerusalem".into() };
+                use chrono_tz::Tz;
+                let tz: Tz = tz_name.parse().unwrap_or(chrono_tz::Asia::Jerusalem);
+                chrono::Utc::now().with_timezone(&tz).naive_local()
+            };
+            let today_str = now_local.format("%Y-%m-%d").to_string();
+            let hour = now_local.hour();
+
+            // إرسال إشعار في الحالات:
+            // 1) انتقال 0→1 (فوري) — بغض النظر عن الوقت
+            // 2) يومياً ≈ 09:00 إذا ما زالت المشكلة ولم يُرسل اليوم
+            // 3) عند الإقلاع (notified_today=false) — يُغطّى بـ 2 إذا كان hour>=9،
+            //    وإلا يُرسل فوراً (الكمبيوتر كان مطفأ)
+            let should_notify = if !was_unreachable {
+                true // انتقال فوري
+            } else if !notified_today && hour >= 9 {
+                true // تذكير يومي (≈09:00)
+            } else if !notified_today && hour < 9 {
+                // كمبيوتر كان مطفأ: أرسل فوراً (مرة واحدة) بغض النظر عن الساعة
+                true
+            } else {
+                false
+            };
+
+            if should_notify {
                 use tauri_plugin_notification::NotificationExt;
-                let msg = format!("⚠️ تعذّر الاتصال بجهاز البصمة — {e}\n\nلن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال.");
+                let ts = now_local.format("%Y-%m-%d %H:%M").to_string();
+                let msg = format!("⚠️ فقد الاتصال مع جهاز البصمة — {}\n\nالخطأ: {}\n\nلن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال.", ts, e);
                 let _ = app.notification().builder().title("⚠️ جهاز البصمة غير متاح").body(&msg).show();
                 crate::telegram::notify_supervisors_gated(app, "⚠️ جهاز البصمة غير متاح", &msg, Some("tg_sup_alerts"));
+                if let Ok(conn) = state.db.lock() {
+                    let _ = db::set_setting(&conn, "device_unreachable_notified", &today_str);
+                }
             }
         }
     }
