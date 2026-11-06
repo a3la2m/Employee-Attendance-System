@@ -262,10 +262,8 @@ export default function App() {
       <aside className="w-60 shrink-0 bg-slate-900 text-slate-100 flex flex-col">
         <div ref={bellRef} className="px-5 py-5 border-b border-slate-800 relative">
           <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <div className="w-11 h-11 rounded-xl bg-white/95 grid place-content-center shadow-sm shrink-0">
-                <img src={logo} alt="logo" className="w-9 h-9 object-contain" />
-              </div>
+            <div className="flex items-center gap-2">
+              <img src={logo} alt="logo" className="w-10 h-10 object-contain" />
               <div>
                 <div className="text-lg font-extrabold leading-tight">نظام الحضور</div>
                 <div className="text-xs text-slate-400 mt-0.5">والرواتب — بصمة K50</div>
