@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getMonthDays,
@@ -91,6 +91,8 @@ export default function Attendance({
   const [emps, setEmps] = useState<Employee[]>([]);
   const [editing, setEditing] = useState<DailyRow | null>(null);
   const [editingDate, setEditingDate] = useState<string>("");
+  const [selectedDaily, setSelectedDaily] = useState<Set<number>>(new Set());
+  const editQueueRef = useRef<DailyRow[]>([]);
   const [empAttOpen, setEmpAttOpen] = useState(false);
   const [empAttEmpId, setEmpAttEmpId] = useState<number | "">("");
   const [empAttPeriod, setEmpAttPeriod] = useState(monthLocal(new Date()));
@@ -389,10 +391,50 @@ export default function Attendance({
             </button>
           </div>
         </div>
+        {selectedDaily.size > 0 && (
+          <div className="mb-2 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-slate-500">
+              محدد: <b>{selectedDaily.size}</b> موظف
+            </span>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              onClick={() => setSelectedDaily(new Set())}
+            >
+              إلغاء التحديد
+            </button>
+            <button
+              className="btn-primary !py-1 text-xs"
+              onClick={() => {
+                const rows = daily.filter((r) => selectedDaily.has(r.employee_id));
+                if (rows.length === 0) return;
+                editQueueRef.current = rows.slice(1);
+                setEditing(rows[0]);
+                setEditingDate(dailyDate);
+              }}
+            >
+              ✏️ تعديل المحدد
+            </button>
+          </div>
+        )}
         <div className="overflow-auto">
           <table className="w-full">
             <thead>
               <tr>
+                <th className="th w-8">
+                  <input
+                    type="checkbox"
+                    className="accent-primary-600"
+                    checked={daily.length > 0 && daily.every((r) => selectedDaily.has(r.employee_id))}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelectedDaily(new Set(daily.map((r) => r.employee_id)));
+                      } else {
+                        setSelectedDaily(new Set());
+                      }
+                    }}
+                    title="تحديد الكل"
+                  />
+                </th>
                 <th className="th">الموظف</th>
                 <th className="th">الحضور</th>
                 <th className="th">الانصراف</th>
@@ -408,7 +450,7 @@ export default function Attendance({
                 <TableSkeleton rows={5} cols={8} />
               ) : daily.length === 0 ? (
                 <tr>
-                  <td className="td text-center text-slate-400 py-6" colSpan={8}>
+                  <td className="td text-center text-slate-400 py-6" colSpan={9}>
                     لا بيانات لهذا اليوم (أعد الحساب أو اسحب من الجهاز).
                   </td>
                 </tr>
@@ -419,6 +461,21 @@ export default function Attendance({
                     !r.absent && r.status === "present" && !!r.first_in && !r.last_out;
                   return (
                   <tr key={r.id} className="hover:bg-slate-50">
+                    <td className="td w-8">
+                      <input
+                        type="checkbox"
+                        className="accent-primary-600"
+                        checked={selectedDaily.has(r.employee_id)}
+                        onChange={(e) => {
+                          setSelectedDaily((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(r.employee_id);
+                            else next.delete(r.employee_id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
                     <td className="td font-medium">{r.name || `#${r.pin}`}</td>
                     <td className="td font-mono">{tfmt(r.first_in)}</td>
                     <td className="td font-mono">{tfmt(r.last_out)}</td>
@@ -744,12 +801,26 @@ export default function Attendance({
               ?.annual_leave_balance ?? 0
           }
           toast={toast}
-          onClose={() => setEditing(null)}
+          onClose={() => {
+            setEditing(null);
+            const rest = editQueueRef.current;
+            if (rest.length > 0) {
+              editQueueRef.current = rest.slice(1);
+              setEditing(rest[0]);
+              setEditingDate(dailyDate);
+            }
+          }}
           onSaved={() => {
             load();
             loadDaily();
             loadEmpAtt();
             listEmployees().then(setEmps).catch(() => {});
+            const rest = editQueueRef.current;
+            if (rest.length > 0) {
+              editQueueRef.current = rest.slice(1);
+              setEditing(rest[0]);
+              setEditingDate(dailyDate);
+            }
           }}
         />
       )}
