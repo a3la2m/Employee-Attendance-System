@@ -169,7 +169,18 @@ export default function Attendance({
   };
 
   useEffect(() => {
-    load();
+    (async () => {
+      setBusy(true);
+      try {
+        const [y, m] = period.split("-").map(Number);
+        const last = new Date(y, m, 0).getDate();
+        await recomputeDays(`${period}-01`, `${period}-${String(last).padStart(2, "0")}`);
+      } catch {
+        // تجاهل أخطاء إعادة الاحتساب — نحمّل البيانات المخزّنة
+      }
+      await load();
+      setBusy(false);
+    })();
   }, [period]);
 
   // تحديث تلقائي عند اعتماد إجازة من طلبات البوت (يؤثر على الحضور)

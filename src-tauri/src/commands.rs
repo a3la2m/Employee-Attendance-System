@@ -793,6 +793,28 @@ pub fn sync_device_internal(state: &AppState) -> Result<Value, String> {
     let info = backend.connect().map_err(|e| e.to_string())?;
     let users = backend.pull_users().map_err(|e| e.to_string())?;
     let punches = backend.pull_attendance().map_err(|e| e.to_string())?;
+
+    // دفع الموظفين المحليين غير الموجودين على الجهاز (عند عودة الاتصال بعد
+    // إضافة/تعديل موظف أثناء انقطاع) — يُرسل الاسم إلى جهاز البصمة تلقائياً.
+    {
+        let device_pins: std::collections::HashSet<String> =
+            users.iter().map(|(p, _, _, _)| p.clone()).collect();
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let mut st = conn
+            .prepare("SELECT pin, name FROM employees WHERE active=1 AND pin IS NOT NULL AND pin <> ''")
+            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        for (pin, name) in rows {
+            if !device_pins.contains(&pin) {
+                let _ = backend.add_user(&pin, &name);
+            }
+        }
+    }
+
     backend.close();
 
     let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
