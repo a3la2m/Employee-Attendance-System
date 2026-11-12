@@ -248,6 +248,7 @@ fn sync_once(app: &tauri::AppHandle) {
             if let Ok(conn) = state.db.lock() {
                 let _ = db::set_setting(&conn, "device_unreachable", "0");
                 let _ = db::set_setting(&conn, "device_unreachable_notified", "");
+                let _ = db::set_setting(&conn, "device_unreachable_since", "");
             }
             if was_unreachable {
                 // تعافٍ: أرسل «كل شيء تمام»
@@ -354,9 +355,28 @@ fn sync_once(app: &tauri::AppHandle) {
             };
 
             if should_notify {
+                if !was_unreachable {
+                    if let Ok(conn) = state.db.lock() {
+                        let _ = db::set_setting(&conn, "device_unreachable_since", &now_local.format("%Y-%m-%d %H:%M").to_string());
+                    }
+                }
                 use tauri_plugin_notification::NotificationExt;
-                let ts = now_local.format("%Y-%m-%d %H:%M").to_string();
-                let msg = format!("⚠️ فقد الاتصال مع جهاز البصمة — {}\n\nالخطأ: {}\n\nلن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال.", ts, e);
+                let since = {
+                    if let Ok(conn) = state.db.lock() {
+                        let v = db::all_settings(&conn)
+                            .ok()
+                            .and_then(|s| s.get("device_unreachable_since").cloned())
+                            .unwrap_or_default();
+                        if v.is_empty() {
+                            now_local.format("%Y-%m-%d %H:%M").to_string()
+                        } else {
+                            v
+                        }
+                    } else {
+                        now_local.format("%Y-%m-%d %H:%M").to_string()
+                    }
+                };
+                let msg = format!("⚠️ فقد الاتصال مع جهاز البصمة — {}\n\nالخطأ: {}\n\nلن تُرسل تنبيهات التأخر/الغياب حتى عودة الاتصال.", since, e);
                 let _ = app.notification().builder().title("⚠️ جهاز البصمة غير متاح").body(&msg).show();
                 crate::telegram::notify_supervisors_gated(app, "⚠️ جهاز البصمة غير متاح", &msg, Some("tg_sup_alerts"));
                 if let Ok(conn) = state.db.lock() {
