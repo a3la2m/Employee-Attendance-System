@@ -93,8 +93,6 @@ export default function Attendance({
   const [editingDate, setEditingDate] = useState<string>("");
   const [selectedDaily, setSelectedDaily] = useState<Set<number>>(new Set());
   const editQueueRef = useRef<DailyRow[]>([]);
-  const [bulkMode, setBulkMode] = useState<"annual" | "sick" | "unpaid" | "present" | "absent" | "auto">("present");
-  const [bulkBusy, setBulkBusy] = useState(false);
   const [empAttOpen, setEmpAttOpen] = useState(false);
   const [empAttEmpId, setEmpAttEmpId] = useState<number | "">("");
   const [empAttPeriod, setEmpAttPeriod] = useState(monthLocal(new Date()));
@@ -404,52 +402,6 @@ export default function Attendance({
             >
               إلغاء التحديد
             </button>
-            <select
-              className="input !w-44 !py-1 text-xs"
-              value={bulkMode}
-              onChange={(e) => setBulkMode(e.target.value as any)}
-              disabled={bulkBusy}
-            >
-              <option value="annual">إجازة سنوية (مدفوعة)</option>
-              <option value="sick">إجازة مرضية (مدفوعة)</option>
-              <option value="unpaid">إجازة بدون راتب</option>
-              <option value="absent">غائب (يدوي)</option>
-              <option value="auto">تلقائي (إرجاع)</option>
-            </select>
-            <button
-              className="btn-primary !py-1 text-xs"
-              disabled={bulkBusy || selectedDaily.size === 0}
-              onClick={async () => {
-                const rows = daily.filter((r) => selectedDaily.has(r.employee_id));
-                if (rows.length === 0) return;
-                setBulkBusy(true);
-                let okCount = 0;
-                const failures: string[] = [];
-                for (const r of rows) {
-                  const name = r.name || `#${r.pin}`;
-                  try {
-                    await setDayManual(r.employee_id, dailyDate, bulkMode, null, null);
-                    okCount += 1;
-                  } catch (e) {
-                    failures.push(`${name}: ${String(e)}`);
-                  }
-                }
-                setBulkBusy(false);
-                await load();
-                await loadDaily();
-                listEmployees().then(setEmps).catch(() => {});
-                if (failures.length === 0) {
-                  toast(`تم تعديل ${okCount} موظف ✅`);
-                } else {
-                  toast(
-                    `تم تعديل ${okCount} موظف. لم يُعدّل ${failures.length}: ${failures.join(" | ")}`,
-                    "err",
-                  );
-                }
-              }}
-            >
-              {bulkBusy ? "جارٍ…" : "✅ تطبيق على المحدد"}
-            </button>
             <button
               className="btn-ghost !py-1 text-xs"
               onClick={() => {
@@ -460,7 +412,7 @@ export default function Attendance({
                 setEditingDate(dailyDate);
               }}
             >
-              ✏️ تعديل (أول محدد)
+              ✏️ تعديل
             </button>
           </div>
         )}
