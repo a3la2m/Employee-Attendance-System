@@ -49,28 +49,29 @@ beforeEach(() => {
 describe("EditDayModal — تحويل اليوم إلى إجازة", () => {
   it("زر المرضية يحوّل اليوم بوضع sick (بلا خصم)", async () => {
     renderModal(5);
-    await userEvent.click(screen.getByTitle(/إجازة مرضية/));
+    await userEvent.click(screen.getByLabelText(/إجازة مرضية/));
+    await userEvent.click(screen.getByRole("button", { name: /حفظ/ }));
     expect(setDayManual).toHaveBeenCalledWith(7, "2026-10-19", "sick", null, null);
   });
 
   it("زر بدون راتب يحوّل اليوم بوضع unpaid", async () => {
     renderModal(5);
-    await userEvent.click(screen.getByTitle(/إجازة بدون راتب/));
+    await userEvent.click(screen.getByLabelText(/إجازة بدون راتب/));
+    await userEvent.click(screen.getByRole("button", { name: /حفظ/ }));
     expect(setDayManual).toHaveBeenCalledWith(7, "2026-10-19", "unpaid", null, null);
   });
 
   it("زر السنوية يعمل عند توفّر الرصيد", async () => {
     renderModal(2);
-    await userEvent.click(screen.getByTitle(/إجازة سنوية/));
+    await userEvent.click(screen.getByLabelText(/إجازة سنوية/));
+    await userEvent.click(screen.getByRole("button", { name: /حفظ/ }));
     expect(setDayManual).toHaveBeenCalledWith(7, "2026-10-19", "annual", null, null);
   });
 
   it("السنوية معطّلة عند نفاد الرصيد ولا تُستدعى", async () => {
     renderModal(0);
-    const btn = screen.getByTitle(/إجازة سنوية/);
-    expect(btn).toBeDisabled();
-    await userEvent.click(btn);
-    expect(setDayManual).not.toHaveBeenCalled();
+    const radio = screen.getByLabelText(/إجازة سنوية/);
+    expect(radio).toBeDisabled();
   });
 });
 

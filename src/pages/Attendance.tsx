@@ -1035,7 +1035,7 @@ export function EditDayModal({
 }) {
   const allRows = rows && rows.length > 0 ? rows : [row];
   const t = (s: string | null) => (s ? (s.split("T")[1] || "").slice(0, 5) : "");
-  const [mode, setMode] = useState<"present" | "absent" | "auto">("present");
+  const [mode, setMode] = useState<"present" | "absent" | "auto" | "annual" | "sick" | "unpaid">("present");
   const [firstIn, setFirstIn] = useState(t(row.first_in));
   const [lastOut, setLastOut] = useState(t(row.last_out));
   const [busy, setBusy] = useState(false);
@@ -1047,9 +1047,15 @@ export function EditDayModal({
     { m: "present" as const, l: "حاضر — ضبط أوقات الحضور والانصراف" },
     { m: "absent" as const, l: "غائب — مهما تقول البصمات" },
     { m: "auto" as const, l: "تلقائي — إرجاع اليوم لاحتساب البصمات" },
+    { m: "sick" as const, l: "إجازة مرضية (مدفوعة) — بلا خصم من الرصيد" },
+    { m: "annual" as const, l: `إجازة سنوية (مدفوعة) — خصم يوم · الرصيد ${balance}` },
+    { m: "unpaid" as const, l: "إجازة بدون راتب — بلا خصم من الرصيد" },
   ];
 
   const submit = async () => {
+    if (mode === "annual" && balance < 1 && allRows.length === 1) {
+      return toast("رصيد الإجازات السنوية غير كافٍ لهذا التحويل", "err");
+    }
     setBusy(true);
     const failures: string[] = [];
     let ok = 0;
@@ -1074,10 +1080,19 @@ export function EditDayModal({
             ? `حُفظ التعديل اليدوي لـ ${ok} موظف ✅`
             : mode === "absent"
               ? `عُلّم ${ok} موظف غياباً يدوياً ✅`
-              : `أُرجع ${ok} موظف للاحتساب التلقائي ✅`,
+              : mode === "auto"
+                ? `أُرجع ${ok} موظف للاحتساب التلقائي ✅`
+                : mode === "sick"
+                  ? `حُوّل ${ok} موظف إلى إجازة مرضية ✅`
+                  : mode === "annual"
+                    ? `حُوّل ${ok} موظف إلى إجازة سنوية ✅`
+                    : `حُوّل ${ok} موظف إلى إجازة بدون راتب ✅`,
         );
       } else {
-        toast(`تم ${ok}، فشل ${failures.length}: ${failures.join(" | ")}`, "err");
+        toast(
+          `تم ${ok}، فشل ${failures.length}: ${failures.join(" | ")}`,
+          failures.length === allRows.length ? "err" : "ok",
+        );
       }
       onSaved();
       onClose();
@@ -1088,44 +1103,6 @@ export function EditDayModal({
     }
   };
 
-  /** تحويل اليوم إلى إجازة من يوم واحد (السنوية تخصم يوماً من الرصيد). */
-  const convertLeave = async (m: "annual" | "sick" | "unpaid") => {
-    // تحقق من الرصيد (للسنوية) — jika any fails, report
-    setBusy(true);
-    const failures: string[] = [];
-    let ok = 0;
-    try {
-      for (const r of allRows) {
-        if (m === "annual") {
-          // check balance per employee
-          // (balance passed is for the first row; fetch per employee not available here)
-        }
-        try {
-          await setDayManual(r.employee_id, date, m, null, null);
-          ok += 1;
-        } catch (e) {
-          failures.push(`${r.name || `#${r.pin}`}: ${String(e)}`);
-        }
-      }
-      if (failures.length === 0) {
-        toast(
-          m === "annual"
-            ? `حُوّل ${ok} موظف إلى إجازة سنوية — خُصم يوم من الرصيد ✅`
-            : m === "sick"
-              ? `حُوّل ${ok} موظف إلى إجازة مرضية (بلا خصم) ✅`
-              : `حُوّل ${ok} موظف إلى إجازة بدون راتب ✅`,
-        );
-      } else {
-        toast(`تم ${ok}، فشل ${failures.length}: ${failures.join(" | ")}`, failures.length === allRows.length ? "err" : "ok");
-      }
-      onSaved();
-      onClose();
-    } catch (e) {
-      toast(String(e), "err");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   /** زرا اليوم: يُطبّقان فوراً على صف اليوم (بلا حفظ). */
   const toggleFlag = async (kind: "break" | "meal") => {
@@ -1151,9 +1128,6 @@ export function EditDayModal({
       toast(String(e), "err");
     }
   };
-
-  const leaveBtn = (cls: string) =>
-    `btn !py-2 !px-1 flex-col gap-0.5 text-xs leading-tight border ${cls}`;
 
   return (
     <Modal
@@ -1183,6 +1157,7 @@ export function EditDayModal({
               checked={mode === m}
               onChange={() => setMode(m)}
               className="accent-primary-600"
+              disabled={m === "annual" && balance < 1}
             />
             {l}
           </label>
@@ -1238,54 +1213,6 @@ export function EditDayModal({
         </p>
       )}
 
-      {/* تحويل اليوم إلى إجازة */}
-      <div className="pt-3 border-t border-slate-100 space-y-2">
-        <p className="text-sm font-bold">أو حوّل اليوم إلى إجازة:</p>
-        <div className="grid grid-cols-3 gap-2">
-          <button
-            type="button"
-            className={leaveBtn(
-              "border-sky-200 bg-sky-50 text-sky-800 hover:bg-sky-100",
-            )}
-            onClick={() => convertLeave("sick")}
-            disabled={busy}
-            title="إجازة مرضية — مدفوعة بلا خصم من الرصيد"
-          >
-            😷 مرضية
-            <span className="text-[10px] font-normal opacity-70">بلا خصم</span>
-          </button>
-          <button
-            type="button"
-            className={leaveBtn(
-              "border-success-200 bg-success-50 text-success-800 hover:bg-success-100 disabled:opacity-40",
-            )}
-            onClick={() => convertLeave("annual")}
-            disabled={busy || balance < 1}
-            title="إجازة سنوية — تخصم يوماً من رصيد الموظف وتعود عند الرجوع"
-          >
-            🌴 سنوية
-            <span className="text-[10px] font-normal opacity-70">
-              خصم يوم · الرصيد {balance}
-            </span>
-          </button>
-          <button
-            type="button"
-            className={leaveBtn(
-              "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100",
-            )}
-            onClick={() => convertLeave("unpaid")}
-            disabled={busy}
-            title="إجازة بدون راتب — بلا خصم من الرصيد"
-          >
-            📄 بدون راتب
-            <span className="text-[10px] font-normal opacity-70">بلا خصم</span>
-          </button>
-        </div>
-        <p className="text-[11px] text-slate-400 leading-relaxed">
-          اليوم الموجود داخل إجازة متعددة الأيام يُرفض ويُعدّل من بطاقة الموظف في
-          شاشة «الموظفون». إرجاع اليوم (حاضر/تلقائي) يعيد الرصيد المخصوم.
-        </p>
-      </div>
 
       {/* خيارات اليوم السريعة */}
       <div className="pt-3 border-t border-slate-100 space-y-2">
