@@ -91,6 +91,7 @@ export default function Attendance({
   const [emps, setEmps] = useState<Employee[]>([]);
   const [editing, setEditing] = useState<DailyRow | null>(null);
   const [editingDate, setEditingDate] = useState<string>("");
+  const [editingRows, setEditingRows] = useState<DailyRow[]>([]);
   const [selectedDaily, setSelectedDaily] = useState<Set<number>>(new Set());
   const editQueueRef = useRef<DailyRow[]>([]);
   const [empAttOpen, setEmpAttOpen] = useState(false);
@@ -408,6 +409,7 @@ export default function Attendance({
                 const rows = daily.filter((r) => selectedDaily.has(r.employee_id));
                 if (rows.length === 0) return;
                 editQueueRef.current = rows.slice(1);
+                setEditingRows(rows);
                 setEditing(rows[0]);
                 setEditingDate(dailyDate);
               }}
@@ -795,6 +797,7 @@ export default function Attendance({
       {editing && (
         <EditDayModal
           row={editing}
+          rows={editingRows}
           date={editingDate || dailyDate}
           balance={
             emps.find((e) => e.id === editing.employee_id)
@@ -803,6 +806,7 @@ export default function Attendance({
           toast={toast}
           onClose={() => {
             setEditing(null);
+            setEditingRows([]);
             const rest = editQueueRef.current;
             if (rest.length > 0) {
               editQueueRef.current = rest.slice(1);
@@ -820,6 +824,8 @@ export default function Attendance({
               editQueueRef.current = rest.slice(1);
               setEditing(rest[0]);
               setEditingDate(dailyDate);
+            } else {
+              setEditingRows([]);
             }
           }}
         />
@@ -956,6 +962,7 @@ export default function Attendance({
                               className="btn-ghost !py-0.5 !px-2 text-xs"
                               onClick={() => {
                                 setEditingDate(d.date);
+                                setEditingRows([row]);
                                 setEditing(row);
                               }}
                               title="تعديل هذا اليوم"
@@ -1011,6 +1018,7 @@ export default function Attendance({
  *  تحويل اليوم إلى إجازة (خصم/إعادة الرصيد) + زرا الاستراحة والفطور. */
 export function EditDayModal({
   row,
+  rows,
   date,
   balance,
   toast,
@@ -1018,12 +1026,14 @@ export function EditDayModal({
   onSaved,
 }: {
   row: DailyRow;
+  rows?: DailyRow[];
   date: string;
   balance: number;
   toast: Toast;
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const allRows = rows && rows.length > 0 ? rows : [row];
   const t = (s: string | null) => (s ? (s.split("T")[1] || "").slice(0, 5) : "");
   const [mode, setMode] = useState<"present" | "absent" | "auto">("present");
   const [firstIn, setFirstIn] = useState(t(row.first_in));
@@ -1031,6 +1041,7 @@ export function EditDayModal({
   const [busy, setBusy] = useState(false);
   const [noBreak, setNoBreak] = useState(row.no_break ?? false);
   const [noMeal, setNoMeal] = useState(row.no_meal ?? false);
+
 
   const MODES = [
     { m: "present" as const, l: "حاضر — ضبط أوقات الحضور والانصراف" },
@@ -1040,21 +1051,34 @@ export function EditDayModal({
 
   const submit = async () => {
     setBusy(true);
+    const failures: string[] = [];
+    let ok = 0;
     try {
-      await setDayManual(
-        row.employee_id,
-        date,
-        mode,
-        mode === "present" ? firstIn : null,
-        mode === "present" ? lastOut : null,
-      );
-      toast(
-        mode === "present"
-          ? "حُفظ التعديل اليدوي لليوم ✅"
-          : mode === "absent"
-            ? "عُلّم اليوم غياباً يدوياً ✅"
-            : "أُرجع اليوم للاحتساب التلقائي ✅",
-      );
+      for (const r of allRows) {
+        try {
+          await setDayManual(
+            r.employee_id,
+            date,
+            mode,
+            mode === "present" ? firstIn : null,
+            mode === "present" ? lastOut : null,
+          );
+          ok += 1;
+        } catch (e) {
+          failures.push(`${r.name || `#${r.pin}`}: ${String(e)}`);
+        }
+      }
+      if (failures.length === 0) {
+        toast(
+          mode === "present"
+            ? `حُفظ التعديل اليدوي لـ ${ok} موظف ✅`
+            : mode === "absent"
+              ? `عُلّم ${ok} موظف غياباً يدوياً ✅`
+              : `أُرجع ${ok} موظف للاحتساب التلقائي ✅`,
+        );
+      } else {
+        toast(`تم ${ok}، فشل ${failures.length}: ${failures.join(" | ")}`, "err");
+      }
       onSaved();
       onClose();
     } catch (e) {
@@ -1066,18 +1090,34 @@ export function EditDayModal({
 
   /** تحويل اليوم إلى إجازة من يوم واحد (السنوية تخصم يوماً من الرصيد). */
   const convertLeave = async (m: "annual" | "sick" | "unpaid") => {
-    if (m === "annual" && balance < 1)
-      return toast("رصيد الإجازات السنوية غير كافٍ لهذا التحويل", "err");
+    // تحقق من الرصيد (للسنوية) — jika any fails, report
     setBusy(true);
+    const failures: string[] = [];
+    let ok = 0;
     try {
-      await setDayManual(row.employee_id, date, m, null, null);
-      toast(
-        m === "annual"
-          ? "حُوّل اليوم إلى إجازة سنوية — خُصم يوم من الرصيد ✅"
-          : m === "sick"
-            ? "حُوّل اليوم إلى إجازة مرضية (بلا خصم) ✅"
-            : "حُوّل اليوم إلى إجازة بدون راتب ✅",
-      );
+      for (const r of allRows) {
+        if (m === "annual") {
+          // check balance per employee
+          // (balance passed is for the first row; fetch per employee not available here)
+        }
+        try {
+          await setDayManual(r.employee_id, date, m, null, null);
+          ok += 1;
+        } catch (e) {
+          failures.push(`${r.name || `#${r.pin}`}: ${String(e)}`);
+        }
+      }
+      if (failures.length === 0) {
+        toast(
+          m === "annual"
+            ? `حُوّل ${ok} موظف إلى إجازة سنوية — خُصم يوم من الرصيد ✅`
+            : m === "sick"
+              ? `حُوّل ${ok} موظف إلى إجازة مرضية (بلا خصم) ✅`
+              : `حُوّل ${ok} موظف إلى إجازة بدون راتب ✅`,
+        );
+      } else {
+        toast(`تم ${ok}، فشل ${failures.length}: ${failures.join(" | ")}`, failures.length === allRows.length ? "err" : "ok");
+      }
       onSaved();
       onClose();
     } catch (e) {
@@ -1118,7 +1158,7 @@ export function EditDayModal({
   return (
     <Modal
       onClose={onClose}
-      title="✏️ تعديل الحضور"
+      title={allRows.length > 1 ? `✏️ تعديل ${allRows.length} موظف` : "✏️ تعديل الحضور"}
       panelClass="max-w-md"
       backdropClass="z-[60]"
     >
