@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getMonthDays,
@@ -93,7 +93,6 @@ export default function Attendance({
   const [editingDate, setEditingDate] = useState<string>("");
   const [editingRows, setEditingRows] = useState<DailyRow[]>([]);
   const [selectedDaily, setSelectedDaily] = useState<Set<number>>(new Set());
-  const editQueueRef = useRef<DailyRow[]>([]);
   const [empAttOpen, setEmpAttOpen] = useState(false);
   const [empAttEmpId, setEmpAttEmpId] = useState<number | "">("");
   const [empAttPeriod, setEmpAttPeriod] = useState(monthLocal(new Date()));
@@ -408,7 +407,6 @@ export default function Attendance({
               onClick={() => {
                 const rows = daily.filter((r) => selectedDaily.has(r.employee_id));
                 if (rows.length === 0) return;
-                editQueueRef.current = rows.slice(1);
                 setEditingRows(rows);
                 setEditing(rows[0]);
                 setEditingDate(dailyDate);
@@ -807,26 +805,13 @@ export default function Attendance({
           onClose={() => {
             setEditing(null);
             setEditingRows([]);
-            const rest = editQueueRef.current;
-            if (rest.length > 0) {
-              editQueueRef.current = rest.slice(1);
-              setEditing(rest[0]);
-              setEditingDate(dailyDate);
-            }
           }}
           onSaved={() => {
             load();
             loadDaily();
             loadEmpAtt();
             listEmployees().then(setEmps).catch(() => {});
-            const rest = editQueueRef.current;
-            if (rest.length > 0) {
-              editQueueRef.current = rest.slice(1);
-              setEditing(rest[0]);
-              setEditingDate(dailyDate);
-            } else {
-              setEditingRows([]);
-            }
+            setEditingRows([]);
           }}
         />
       )}
